@@ -281,6 +281,43 @@ export default function ScanDetailPage() {
           </div>
         </div>
       )}
+
+      {/* Audit Trail — reconstructable timeline */}
+      <div className="rounded-[1.75rem] p-1.5 bg-white/[0.03] ring-1 ring-white/10 shadow-[0_12px_40px_rgba(0,0,0,0.5)]">
+        <div className="rounded-[calc(1.75rem-0.375rem)] bg-gradient-to-b from-slate-900/90 to-slate-950 p-6">
+          <h3 className="text-sm font-bold text-white flex items-center gap-2">
+            <Database className="w-4 h-4 text-slate-400" /> Audit Trail
+          </h3>
+          <p className="text-xs text-slate-400 mt-1">Reconstructable: scan → issues → AI → human decision.</p>
+          <div className="mt-4 space-y-3">
+            <div className="flex gap-3">
+              <div className="w-7 h-7 rounded-full bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center text-cyan-400 shrink-0"><span className="text-[10px] font-mono">1</span></div>
+              <div>
+                <div className="text-xs font-semibold text-white">Scan #{scan.id} executed</div>
+                <div className="text-[11px] font-mono text-slate-400">{new Date(scan.completed_at).toLocaleString()} • {issues.length} issues • {scan.incident_severity}</div>
+                <div className="text-xs text-slate-300 mt-1 line-clamp-2">{scan.incident_summary}</div>
+              </div>
+            </div>
+            <div className="flex gap-3">
+              <div className={`w-7 h-7 rounded-full border flex items-center justify-center shrink-0 ${latestAI ? 'bg-teal-500/10 border-teal-500/20 text-teal-400' : 'bg-white/5 border-white/10 text-slate-500'}`}><Sparkles className="w-3 h-3" /></div>
+              <div>
+                <div className="text-xs font-semibold text-white">AI analysis {latestAI ? `generated • ${latestAI.severity} • ${(latestAI.confidence*100).toFixed(0)}%` : "pending"}</div>
+                {latestAI ? <div className="text-xs text-slate-300 mt-1 line-clamp-2">{latestAI.summary}</div> : <div className="text-[11px] text-slate-500">Click “Run AI Analyst” above.</div>}
+              </div>
+            </div>
+            <div className="flex gap-3">
+              <div className={`w-7 h-7 rounded-full border flex items-center justify-center shrink-0 ${latestRemediation?.status==='APPROVED'?'bg-emerald-500/10 border-emerald-500/20 text-emerald-400':latestRemediation?.status==='REJECTED'?'bg-rose-500/10 border-rose-500/20 text-rose-400':'bg-amber-500/10 border-amber-500/20 text-amber-400'}`}><ShieldAlert className="w-3 h-3" /></div>
+              <div>
+                <div className="text-xs font-semibold text-white">Human decision • {latestRemediation?.status || "PENDING"}</div>
+                {latestRemediation ? (
+                  <div className="text-[11px] font-mono text-slate-400 mt-1">{latestRemediation.decision_by || "—"} • {latestRemediation.decision_at ? new Date(latestRemediation.decision_at).toLocaleString() : "not yet decided"} {latestRemediation.notes ? `• ${latestRemediation.notes.slice(0,60)}` : ""}</div>
+                ) : <div className="text-[11px] text-slate-500">Awaiting approval.</div>}
+              </div>
+            </div>
+          </div>
+          <div className="mt-4 text-[11px] font-mono text-slate-500">All decisions are persisted in PostgreSQL and visible at <Link href="/audit" className="text-cyan-400 hover:text-cyan-300">/audit</Link>.</div>
+        </div>
+      </div>
     </div>
   );
 }

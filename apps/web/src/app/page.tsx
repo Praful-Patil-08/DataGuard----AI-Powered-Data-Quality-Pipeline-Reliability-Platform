@@ -283,6 +283,7 @@ export default function Dashboard() {
                     <th className="px-6 py-3.5">Pipeline Run</th>
                     <th className="px-6 py-3.5">Status</th>
                     <th className="px-6 py-3.5">Deterministic Bounds</th>
+                    <th className="px-6 py-3.5">Business Impact</th>
                     <th className="px-6 py-3.5">AI Analysis</th>
                     <th className="px-6 py-3.5">Completed</th>
                     <th className="px-6 py-3.5 text-right">Inspect</th>
@@ -324,6 +325,15 @@ export default function Dashboard() {
                             <span className="text-slate-600">•</span>
                             <span className="text-amber-400 font-medium">{scan.warning_count} warnings</span>
                           </div>
+                        </td>
+                        <td className="px-6 py-4">
+                          {isCritical ? (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-500/10 text-rose-300 border border-rose-500/20">At Risk</span>
+                          ) : isWarning ? (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/10 text-amber-300 border border-amber-500/20">Warning</span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/10 text-emerald-300 border border-emerald-500/20">Healthy</span>
+                          )}
                         </td>
                         <td className="px-6 py-4 text-xs">
                           {scan.ai_analyses && scan.ai_analyses.length > 0 ? (

@@ -1,6 +1,11 @@
 from typing import List, Dict, Any, Set
+import os
+import json
+from pathlib import Path
 
-# Standard Lineage Graph for E-commerce / D2C Analytics
+CONFIG_PATH = Path(__file__).parent / "lineage_config.json"
+
+# Standard Lineage Graph for E-commerce / D2C Analytics (fallback)
 DEFAULT_LINEAGE_MAP = {
     # Column -> list of downstream assets (model or dashboard)
     "orders.order_value": [
@@ -36,15 +41,35 @@ DEFAULT_LINEAGE_MAP = {
     ]
 }
 
+def _load_config() -> Dict[str, Any]:
+    try:
+        if CONFIG_PATH.exists():
+            return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return DEFAULT_LINEAGE_MAP
+
+def get_lineage_config() -> Dict[str, Any]:
+    return _load_config()
+
+def is_demo_lineage(dataset_name: str, column_name: str) -> bool:
+    # For MVP, all lineage is demo — flag true unless config is explicitly marked production
+    cfg = _load_config()
+    clean_ds = dataset_name.lower().replace(".csv", "").replace(".json", "")
+    key = f"{clean_ds}.{column_name.lower()}"
+    # If key is in default and not overridden, it's demo; if file edited, still demo until OpenLineage integrated
+    return True
+
 def get_downstream_impact(dataset_name: str, column_name: str) -> List[Dict[str, str]]:
     """
     Traces downstream SQL models and BI dashboards affected by a given dataset column.
+    Uses editable lineage_config.json if present, else DEFAULT_LINEAGE_MAP.
     """
     clean_ds = dataset_name.lower().replace(".csv", "").replace(".json", "")
     key = f"{clean_ds}.{column_name.lower()}"
-
-    if key in DEFAULT_LINEAGE_MAP:
-        return DEFAULT_LINEAGE_MAP[key]
+    cfg = _load_config()
+    if key in cfg:
+        return cfg[key]
 
     # Heuristic fallback if not in explicit lineage map
     inferred_assets = []

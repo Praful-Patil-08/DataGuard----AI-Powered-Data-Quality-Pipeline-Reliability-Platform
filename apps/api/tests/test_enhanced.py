@@ -123,3 +123,31 @@ def test_storage_quality_integration():
     issues = client.get(f"/api/scans/{r.json()['id']}/issues").json()
     types = {i["issue_type"] for i in issues}
     assert "NEGATIVE_VALUE_ANOMALY" in types or "DUPLICATE_PRIMARY_KEY" in types
+
+def test_lineage_config_editable_and_history_business_impact():
+    Base.metadata.drop_all(bind=engine)
+    Base.metadata.create_all(bind=engine)
+    # lineage config get
+    r = client.get("/api/lineage/config")
+    assert r.status_code == 200
+    assert "config" in r.json()
+    assert "is_demo" in r.json()
+    # lineage impact is_demo flag
+    r = client.get("/api/lineage/orders/order_value")
+    assert r.json()["is_demo"] == True
+    # history business_impact
+    with open("../../sample-data/orders_v1.csv","rb") as f:
+        v1 = client.post("/api/datasets/upload", files={"file": ("orders_v1.csv", f, "text/csv")}).json()["dataset_id"]
+    client.post(f"/api/datasets/{v1}/scan")
+    with open("../../sample-data/orders_v2_schema_drift.csv","rb") as f:
+        v2 = client.post("/api/datasets/upload", files={"file": ("orders_v2_schema_drift.csv", f, "text/csv")}).json()["dataset_id"]
+    sc = client.post(f"/api/datasets/{v2}/scan?baseline_dataset_id={v1}").json()
+    client.post(f"/api/scans/{sc['id']}/analyze")
+    h = client.get(f"/api/datasets/{v2}/history").json()
+    assert "business_impact" in h["history"][0]
+    assert h["history"][0]["business_impact"] is not None
+    # put lineage config (restore after)
+    import json, pathlib
+    orig = client.get("/api/lineage/config").json()["config"]
+    r = client.put("/api/lineage/config", json=orig)
+    assert r.status_code == 200

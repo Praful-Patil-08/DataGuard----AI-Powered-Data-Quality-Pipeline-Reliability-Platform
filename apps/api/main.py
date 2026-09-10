@@ -12,8 +12,9 @@ import schemas
 from scanner import parse_dataset_content, profile_dataframe
 from drift import detect_schema_drift, generate_incident_summary, assess_gate
 from quality import run_quality_checks
-from lineage import get_downstream_impact, DEFAULT_LINEAGE_MAP
+from lineage import get_downstream_impact, DEFAULT_LINEAGE_MAP, get_lineage_config, is_demo_lineage, CONFIG_PATH
 from ai import run_ai_analyst
+import json as _json
 
 # Storage for uploaded datasets to enable quality checks during scan
 STORAGE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "storage")
@@ -447,6 +448,8 @@ def get_dataset_history(dataset_id: int, db: Session = Depends(get_db)):
     scans = db.query(models.Scan).filter(models.Scan.dataset_id == dataset_id).order_by(models.Scan.completed_at.asc()).all()
     points = []
     for s in scans:
+        # include business_impact from latest AI if available
+        ai = db.query(models.AIAnalysis).filter(models.AIAnalysis.scan_id == s.id).order_by(desc(models.AIAnalysis.created_at)).first()
         points.append({
             "scan_id": s.id,
             "created_at": s.completed_at.isoformat() if s.completed_at else None,
@@ -455,6 +458,8 @@ def get_dataset_history(dataset_id: int, db: Session = Depends(get_db)):
             "warning_count": s.warning_count,
             "healthy_count": s.healthy_count,
             "incident_summary": s.incident_summary,
+            "business_impact": ai.business_impact if ai and ai.business_impact else None,
+            "technical_impact": ai.technical_impact if ai and ai.technical_impact else None,
         })
     return {"dataset_id": dataset_id, "dataset_name": ds.name, "history": points}
 
@@ -685,17 +690,35 @@ def reject_remediation(
     return rem
 
 # ----------------- Lineage -----------------
+@app.get("/api/lineage/config")
+def get_lineage_config_endpoint():
+    cfg = get_lineage_config()
+    return {"config": cfg, "is_demo": True, "note": "Editable lineage_config.json — replace with OpenLineage/dbt in production."}
+
+@app.put("/api/lineage/config")
+def update_lineage_config(payload: dict, db: Session = Depends(get_db)):
+    # Validate shape: keys are "dataset.column", values are list of assets
+    try:
+        # basic validation
+        for k, v in payload.items():
+            if "." not in k or not isinstance(v, list):
+                raise ValueError(f"Invalid key {k}")
+        CONFIG_PATH.write_text(_json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        return {"status": "updated", "config": payload}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
 @app.get("/api/lineage/{dataset_name}/{column_name}", response_model=schemas.ColumnImpactResponse)
 def get_column_lineage(dataset_name: str, column_name: str):
     assets = get_downstream_impact(dataset_name, column_name)
     downstream = [schemas.DownstreamAsset(**a) for a in assets]
-    is_demo = f"{dataset_name.lower()}.{column_name.lower()}" in DEFAULT_LINEAGE_MAP
+    demo = is_demo_lineage(dataset_name, column_name)
     return schemas.ColumnImpactResponse(
         column_name=column_name,
         dataset_name=dataset_name,
         affected_assets=downstream,
-        is_demo=not is_demo or True,  # all demo for MVP; explicit flag
-        demo_note="Static demo lineage from lineage.py — replace with OpenLineage/dbt in production."
+        is_demo=demo,
+        demo_note="Static demo lineage from lineage_config.json — replace with OpenLineage/dbt in production."
     )
 
 @app.get("/api/audit")

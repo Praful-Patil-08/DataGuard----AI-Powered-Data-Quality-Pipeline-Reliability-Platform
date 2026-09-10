@@ -251,6 +251,7 @@ export default function DatasetDetailPage() {
                         <span className="text-[11px] font-mono text-slate-500">{h.critical_count}c • {h.warning_count}w • {h.healthy_count}h</span>
                       </div>
                       <div className="text-xs text-slate-300 mt-1 line-clamp-1">{h.incident_summary}</div>
+                      {h.business_impact && <div className="text-[11px] text-amber-300/80 mt-1 line-clamp-1">↳ {h.business_impact}</div>}
                       <div className="text-[11px] font-mono text-slate-500 mt-1">{new Date(h.created_at).toLocaleString()}</div>
                     </div>
                     <Link href={`/scans/${h.scan_id}`} className="ml-4 shrink-0 px-3 py-1 rounded-full bg-white/5 border border-white/10 text-xs text-slate-300 hover:text-white">View</Link>

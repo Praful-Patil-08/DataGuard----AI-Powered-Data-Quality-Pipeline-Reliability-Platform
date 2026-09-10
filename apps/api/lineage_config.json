@@ -1,0 +1,101 @@
+{
+  "orders.order_value": [
+    {
+      "name": "revenue_model",
+      "asset_type": "SQL_MODEL",
+      "relationship": "DIRECT_INPUT"
+    },
+    {
+      "name": "monthly_revenue",
+      "asset_type": "SQL_MODEL",
+      "relationship": "ROLLUP_AGGREGATION"
+    },
+    {
+      "name": "customer_ltv",
+      "asset_type": "SQL_MODEL",
+      "relationship": "METRIC_CALCULATION"
+    },
+    {
+      "name": "Executive Revenue Dashboard",
+      "asset_type": "DASHBOARD",
+      "relationship": "KPI_REPORT"
+    }
+  ],
+  "orders.order_amount": [
+    {
+      "name": "revenue_model",
+      "asset_type": "SQL_MODEL",
+      "relationship": "POTENTIAL_MAPPING"
+    },
+    {
+      "name": "Executive Revenue Dashboard",
+      "asset_type": "DASHBOARD",
+      "relationship": "KPI_REPORT"
+    }
+  ],
+  "orders.customer_id": [
+    {
+      "name": "customer_360_view",
+      "asset_type": "SQL_MODEL",
+      "relationship": "PRIMARY_JOIN_KEY"
+    },
+    {
+      "name": "cohort_retention_analysis",
+      "asset_type": "SQL_MODEL",
+      "relationship": "GROUPING_KEY"
+    },
+    {
+      "name": "Customer Insights Dashboard",
+      "asset_type": "DASHBOARD",
+      "relationship": "USER_SEGMENTATION"
+    }
+  ],
+  "orders.discount": [
+    {
+      "name": "margin_analysis_model",
+      "asset_type": "SQL_MODEL",
+      "relationship": "PROFITABILITY_CALC"
+    },
+    {
+      "name": "Promotion ROI Dashboard",
+      "asset_type": "DASHBOARD",
+      "relationship": "DISCOUNT_EFFECTIVENESS"
+    }
+  ],
+  "orders.order_date": [
+    {
+      "name": "daily_sales_summary",
+      "asset_type": "SQL_MODEL",
+      "relationship": "PARTITION_TIMESTAMP"
+    },
+    {
+      "name": "Executive Revenue Dashboard",
+      "asset_type": "DASHBOARD",
+      "relationship": "TIME_SERIES_FILTER"
+    }
+  ],
+  "customers.signup_date": [
+    {
+      "name": "cohort_retention_analysis",
+      "asset_type": "SQL_MODEL",
+      "relationship": "COHORT_ANCHOR"
+    },
+    {
+      "name": "Marketing Attribution Dashboard",
+      "asset_type": "DASHBOARD",
+      "relationship": "ACQUISITION_TIMELINE"
+    }
+  ],
+  "products.price": [
+    {
+      "name": "gross_merchandise_value",
+      "asset_type": "SQL_MODEL",
+      "relationship": "PRICE_CALCULATION"
+    },
+    {
+      "name": "Pricing Optimization Dashboard",
+      "asset_type": "DASHBOARD",
+      "relationship": "PRICING_BENCHMARK"
+    }
+  ]
+}

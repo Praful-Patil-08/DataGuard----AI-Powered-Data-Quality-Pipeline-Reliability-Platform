@@ -20,6 +20,9 @@ export default function DatasetDetailPage() {
   const [selectedBaseline, setSelectedBaseline] = useState<string>("");
   const [scanning, setScanning] = useState(false);
   const [scanMsg, setScanMsg] = useState<string | null>(null);
+  const [lineageCfg, setLineageCfg] = useState<string>("");
+  const [cfgSaving, setCfgSaving] = useState(false);
+  const [cfgMsg, setCfgMsg] = useState<string | null>(null);
 
   useEffect(() => {
     const load = async () => {
@@ -46,6 +49,24 @@ export default function DatasetDetailPage() {
     };
     if (id) load();
   }, [id]);
+
+  useEffect(() => {
+    if (tab !== "lineage") return;
+    fetch(`${API_BASE}/api/lineage/config`).then(r=>r.json()).then(j=> setLineageCfg(JSON.stringify(j.config, null, 2))).catch(()=>{});
+  }, [tab]);
+
+  const saveLineage = async () => {
+    setCfgSaving(true);
+    setCfgMsg(null);
+    try {
+      const parsed = JSON.parse(lineageCfg);
+      const r = await fetch(`${API_BASE}/api/lineage/config`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(parsed) });
+      if (!r.ok) throw new Error((await r.json()).detail || "Save failed");
+      setCfgMsg("Saved — lineage_config.json updated (demo).");
+      setTimeout(()=>setCfgMsg(null), 3000);
+    } catch (e:any) { setCfgMsg(`Error: ${e.message}`); }
+    finally { setCfgSaving(false); }
+  };
 
   const triggerScan = async () => {
     setScanning(true);
@@ -264,21 +285,36 @@ export default function DatasetDetailPage() {
       )}
 
       {tab === "lineage" && (
-        <div className="rounded-[1.5rem] p-1 bg-white/[0.03] ring-1 ring-white/10">
-          <div className="rounded-[calc(1.5rem-0.25rem)] bg-gradient-to-b from-slate-900/90 to-slate-950 p-6">
-            <h3 className="text-sm font-bold text-white">Lineage • Demo</h3>
-            <p className="text-xs text-slate-400 mt-1">Static lineage from <code className="text-cyan-300">lineage.py</code>. Replace with OpenLineage in production.</p>
-            <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3">
-              {(schema?.columns||[]).slice(0,6).map((c:any)=>(
-                <div key={c.id} className="p-3 rounded-xl bg-black/40 border border-white/10">
-                  <div className="text-xs font-mono font-semibold text-white">{dataset.name}.{c.column_name}</div>
-                  <div className="text-[11px] text-slate-400 mt-1">{c.data_type} • {c.null_count} nulls</div>
-                  <Link href={`/scans/${latestScan?.id||''}`} className="text-[11px] text-cyan-400 mt-2 inline-block">Check impact →</Link>
-                </div>
-              ))}
+        <div className="space-y-4">
+          <div className="rounded-[1.5rem] p-1 bg-white/[0.03] ring-1 ring-white/10">
+            <div className="rounded-[calc(1.5rem-0.25rem)] bg-gradient-to-b from-slate-900/90 to-slate-950 p-6">
+              <h3 className="text-sm font-bold text-white">Lineage • Demo (editable)</h3>
+              <p className="text-xs text-slate-400 mt-1">Source: <code className="text-cyan-300">lineage_config.json</code> via <code className="text-cyan-300">GET/PUT /api/lineage/config</code>. Replace with OpenLineage/dbt in production.</p>
+              <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3">
+                {(schema?.columns||[]).slice(0,6).map((c:any)=>(
+                  <div key={c.id} className="p-3 rounded-xl bg-black/40 border border-white/10">
+                    <div className="text-xs font-mono font-semibold text-white">{dataset.name}.{c.column_name}</div>
+                    <div className="text-[11px] text-slate-400 mt-1">{c.data_type} • {c.null_count} nulls</div>
+                    <Link href={`/scans/${latestScan?.id||''}`} className="text-[11px] text-cyan-400 mt-2 inline-block">Check impact →</Link>
+                  </div>
+                ))}
+              </div>
+              <div className="mt-4 p-3 rounded-xl bg-amber-500/5 border border-amber-500/20 text-xs text-amber-200">
+                This is demo lineage. For a real warehouse, connect dbt manifest or OpenLineage events. Flag <code>is_demo:true</code> is returned by <code>/api/lineage/{'{ds}'}/{'{col}'}</code>.
+              </div>
             </div>
-            <div className="mt-4 p-3 rounded-xl bg-amber-500/5 border border-amber-500/20 text-xs text-amber-200">
-              This is demo lineage. For a real warehouse, connect dbt manifest or OpenLineage events.
+          </div>
+          <div className="rounded-[1.5rem] p-1 bg-white/[0.03] ring-1 ring-white/10">
+            <div className="rounded-[calc(1.5rem-0.25rem)] bg-gradient-to-b from-slate-900/90 to-slate-950 p-6">
+              <div className="flex items-center justify-between">
+                <h4 className="text-xs font-bold text-white tracking-tight">Edit lineage_config.json</h4>
+                <button onClick={saveLineage} disabled={cfgSaving} className="px-3 py-1 rounded-full bg-emerald-500 hover:bg-emerald-400 text-emerald-950 text-xs font-bold disabled:opacity-50">
+                  {cfgSaving ? "Saving…" : "Save config"}
+                </button>
+              </div>
+              <p className="text-[11px] text-slate-400 mt-1">Keys are <code>dataset.column</code>, values are downstream assets. Validated on save.</p>
+              <textarea value={lineageCfg} onChange={e=>setLineageCfg(e.target.value)} rows={14} spellCheck={false} className="mt-3 w-full p-3 rounded-xl bg-black/50 border border-white/10 text-[11px] font-mono text-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-400" placeholder='{"orders.order_value": [{"name":"revenue_model","asset_type":"SQL_MODEL","relationship":"DIRECT_INPUT"}]}' />
+              {cfgMsg && <div className="mt-2 text-xs font-mono text-emerald-300">{cfgMsg}</div>}
             </div>
           </div>
         </div>

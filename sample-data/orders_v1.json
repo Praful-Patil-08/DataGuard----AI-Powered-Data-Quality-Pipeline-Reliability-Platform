@@ -1,0 +1,42 @@
+[
+  {
+    "order_id": 1001,
+    "customer_id": 501,
+    "order_date": "2026-08-01",
+    "status": "COMPLETED",
+    "discount": 0.05,
+    "order_value": 450.00
+  },
+  {
+    "order_id": 1002,
+    "customer_id": 502,
+    "order_date": "2026-08-01",
+    "status": "COMPLETED",
+    "discount": 0.10,
+    "order_value": 850.50
+  },
+  {
+    "order_id": 1003,
+    "customer_id": 503,
+    "order_date": "2026-08-02",
+    "status": "SHIPPED",
+    "discount": 0.00,
+    "order_value": 1200.00
+  },
+  {
+    "order_id": 1004,
+    "customer_id": 504,
+    "order_date": "2026-08-02",
+    "status": "COMPLETED",
+    "discount": 0.15,
+    "order_value": 620.00
+  },
+  {
+    "order_id": 1005,
+    "customer_id": 505,
+    "order_date": "2026-08-03",
+    "status": "PENDING",
+    "discount": 0.00,
+    "order_value": 990.00
+  }
+]

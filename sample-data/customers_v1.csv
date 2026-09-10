@@ -1,0 +1,6 @@
+customer_id,signup_date,city,acquisition_channel
+501,2026-01-10,Mumbai,organic_search
+502,2026-01-12,Bengaluru,google_ads
+503,2026-01-15,Delhi,meta_ads
+504,2026-02-01,Pune,referral
+505,2026-02-04,Hyderabad,organic_search

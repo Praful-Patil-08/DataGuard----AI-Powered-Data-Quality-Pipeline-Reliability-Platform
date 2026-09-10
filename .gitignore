@@ -55,3 +55,5 @@ postgres_data/
 
 # Data
 *.csv.bak
+storage/
+uploads/

@@ -15,6 +15,10 @@ from quality import run_quality_checks
 from lineage import get_downstream_impact
 from ai import run_ai_analyst
 
+# Storage for uploaded datasets to enable quality checks during scan
+STORAGE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "storage")
+os.makedirs(STORAGE_DIR, exist_ok=True)
+
 # Create all database tables on application startup
 models.Base.metadata.create_all(bind=engine)
 
@@ -110,6 +114,14 @@ async def upload_dataset(
     db.commit()
     db.refresh(dataset)
 
+    # Persist raw file for quality checks during scan (deterministic engine remains data-aware)
+    try:
+        storage_path = os.path.join(STORAGE_DIR, f"{dataset.id}_{filename}")
+        with open(storage_path, "wb") as out:
+            out.write(content)
+    except Exception:
+        pass  # Non-critical: scan will fallback to metadata-only checks
+
     # Compute schema profile & fingerprint
     column_profiles, fingerprint = profile_dataframe(df)
 
@@ -122,7 +134,7 @@ async def upload_dataset(
     db.commit()
     db.refresh(schema_record)
 
-    # Save columns
+    # Save columns - enhanced with Watchtower profiling
     for cp in column_profiles:
         sc = models.SchemaColumn(
             schema_id=schema_record.id,
@@ -131,7 +143,18 @@ async def upload_dataset(
             nullable=cp["nullable"],
             unique_count=cp["unique_count"],
             null_count=cp["null_count"],
-            sample_values=cp["sample_values"]
+            sample_values=cp["sample_values"],
+            null_rate=cp.get("null_rate", 0.0),
+            unique_ratio=cp.get("unique_ratio", 0.0),
+            min_value=cp.get("min_value"),
+            max_value=cp.get("max_value"),
+            mean=cp.get("mean"),
+            median=cp.get("median"),
+            p05=cp.get("p05"),
+            p95=cp.get("p95"),
+            outlier_count=cp.get("outlier_count", 0),
+            outlier_rate=cp.get("outlier_rate", 0.0),
+            top_values=cp.get("top_values", []),
         )
         db.add(sc)
     db.commit()
@@ -186,15 +209,28 @@ def scan_dataset(
         "data_type": c.data_type,
         "nullable": c.nullable,
         "null_count": c.null_count,
-        "unique_count": c.unique_count
+        "unique_count": c.unique_count,
+        "null_rate": c.null_rate if c.null_rate is not None else 0.0,
+        "unique_ratio": c.unique_ratio if c.unique_ratio is not None else 0.0,
+        "mean": c.mean,
+        "median": c.median,
+        "min_value": c.min_value,
+        "max_value": c.max_value,
+        "p05": c.p05,
+        "p95": c.p95,
+        "outlier_count": c.outlier_count or 0,
+        "outlier_rate": c.outlier_rate if c.outlier_rate is not None else 0.0,
+        "top_values": c.top_values or [],
     } for c in current_schema.columns]
 
     # Look for baseline schema
     baseline_schema = None
+    baseline_dataset = None
     if baseline_dataset_id:
         baseline_schema = db.query(models.SchemaRecord).filter(
             models.SchemaRecord.dataset_id == baseline_dataset_id
         ).order_by(desc(models.SchemaRecord.created_at)).first()
+        baseline_dataset = db.query(models.Dataset).filter(models.Dataset.id == baseline_dataset_id).first()
     else:
         # Check if there is an earlier dataset with the same name or prefix
         prefix = dataset.name.split("_v")[0]
@@ -206,42 +242,97 @@ def scan_dataset(
             baseline_schema = db.query(models.SchemaRecord).filter(
                 models.SchemaRecord.dataset_id == earlier_ds.id
             ).order_by(desc(models.SchemaRecord.created_at)).first()
+            baseline_dataset = earlier_ds
 
     all_issues = []
 
-    # 1. Deterministic Schema Drift Check
+    # 1. Deterministic Schema Drift Check - Watchtower-enhanced with row-count, null-rate, numeric, cardinality
     if baseline_schema:
         base_cols = [{
             "column_name": c.column_name,
             "data_type": c.data_type,
             "nullable": c.nullable,
             "null_count": c.null_count,
-            "unique_count": c.unique_count
+            "unique_count": c.unique_count,
+            "null_rate": c.null_rate if c.null_rate is not None else 0.0,
+            "unique_ratio": c.unique_ratio if c.unique_ratio is not None else 0.0,
+            "mean": c.mean,
+            "median": c.median,
+            "min_value": c.min_value,
+            "max_value": c.max_value,
+            "p05": c.p05,
+            "p95": c.p95,
+            "outlier_count": c.outlier_count or 0,
+            "outlier_rate": c.outlier_rate if c.outlier_rate is not None else 0.0,
+            "top_values": c.top_values or [],
         } for c in baseline_schema.columns]
-        drift_issues = detect_schema_drift(base_cols, curr_cols)
+        baseline_row_count = baseline_dataset.row_count if baseline_dataset else None
+        current_row_count = dataset.row_count
+        drift_issues = detect_schema_drift(
+            base_cols, curr_cols,
+            baseline_row_count=baseline_row_count,
+            current_row_count=current_row_count
+        )
         all_issues.extend(drift_issues)
 
-    # 2. Deterministic Quality Checks
-    # We inspect column metadata for immediate deterministic quality flags
-    for c in current_schema.columns:
-        if c.column_name.lower().endswith("_id") and c.nullable and c.null_count > 0:
-            all_issues.append({
-                "issue_type": "PRIMARY_KEY_NULL",
-                "severity": "CRITICAL",
-                "column_name": c.column_name,
-                "description": f"Identifier column '{c.column_name}' contains {c.null_count} NULL values.",
-                "metadata": {"null_count": c.null_count}
-            })
-        if c.null_count > 0 and dataset.row_count > 0:
-            null_pct = round((c.null_count / dataset.row_count) * 100, 2)
-            if null_pct > 15.0:
+    # 2. Deterministic Quality Checks - try comprehensive engine with stored file, fallback to metadata
+    quality_ran = False
+    try:
+        # Locate stored file for current dataset - exact match
+        exact_path = os.path.join(STORAGE_DIR, f"{dataset.id}_{dataset.filename}")
+        stored_path = exact_path if os.path.exists(exact_path) else None
+        # Fallback: search by id prefix (for legacy)
+        if not stored_path:
+            for fname in os.listdir(STORAGE_DIR):
+                if fname.startswith(f"{dataset.id}_"):
+                    # Ensure filename matches dataset's filename to avoid stale id collision
+                    if fname == f"{dataset.id}_{dataset.filename}":
+                        stored_path = os.path.join(STORAGE_DIR, fname)
+                        break
+            if not stored_path:
+                for fname in os.listdir(STORAGE_DIR):
+                    if fname.startswith(f"{dataset.id}_"):
+                        stored_path = os.path.join(STORAGE_DIR, fname)
+                        break
+        # Fallback for demo datasets that were seeded from sample-data
+        if not stored_path and dataset.name in ("orders_v1","orders_v2_schema_drift","orders_bad_quality","customers_v1","products_v1"):
+            candidate = os.path.abspath(os.path.join(STORAGE_DIR, "../../sample-data", f"{dataset.name}.csv"))
+            alt = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../sample-data", f"{dataset.name}.csv"))
+            for p in [candidate, alt, os.path.join(os.path.dirname(__file__), f"../../sample-data/{dataset.name}.csv")]:
+                if os.path.exists(p):
+                    stored_path = p
+                    break
+        if stored_path and os.path.exists(stored_path):
+            with open(stored_path, "rb") as fh:
+                content = fh.read()
+            df_quality = parse_dataset_content(content, dataset.filename or stored_path)
+            q_issues = run_quality_checks(df_quality)
+            all_issues.extend(q_issues)
+            quality_ran = True
+    except Exception:
+        quality_ran = False
+
+    if not quality_ran:
+        # Fallback metadata-only checks (covers cases where file not stored)
+        for c in current_schema.columns:
+            if c.column_name.lower().endswith("_id") and c.nullable and c.null_count > 0:
                 all_issues.append({
-                    "issue_type": "HIGH_NULL_RATE",
-                    "severity": "WARNING",
+                    "issue_type": "PRIMARY_KEY_NULL",
+                    "severity": "CRITICAL",
                     "column_name": c.column_name,
-                    "description": f"Column '{c.column_name}' has a null rate of {null_pct}%.",
-                    "metadata": {"null_count": c.null_count, "null_pct": null_pct}
+                    "description": f"Identifier column '{c.column_name}' contains {c.null_count} NULL values.",
+                    "metadata": {"null_count": c.null_count}
                 })
+            if c.null_count > 0 and dataset.row_count > 0:
+                null_pct = round((c.null_count / dataset.row_count) * 100, 2)
+                if null_pct > 15.0:
+                    all_issues.append({
+                        "issue_type": "HIGH_NULL_RATE",
+                        "severity": "WARNING",
+                        "column_name": c.column_name,
+                        "description": f"Column '{c.column_name}' has a null rate of {null_pct}%.",
+                        "metadata": {"null_count": c.null_count, "null_pct": null_pct}
+                    })
 
     critical_count = sum(1 for iss in all_issues if iss["severity"] == "CRITICAL")
     warning_count = sum(1 for iss in all_issues if iss["severity"] == "WARNING")
@@ -445,6 +536,14 @@ def seed_demo_dataset(sample_name: str, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(dataset)
 
+    # Persist demo file for quality checks
+    try:
+        storage_path = os.path.join(STORAGE_DIR, f"{dataset.id}_{filename}")
+        with open(storage_path, "wb") as out:
+            out.write(content)
+    except Exception:
+        pass
+
     # Profile schema
     column_profiles, fingerprint = profile_dataframe(df)
     schema_record = models.SchemaRecord(
@@ -464,7 +563,18 @@ def seed_demo_dataset(sample_name: str, db: Session = Depends(get_db)):
             nullable=cp["nullable"],
             unique_count=cp["unique_count"],
             null_count=cp["null_count"],
-            sample_values=cp["sample_values"]
+            sample_values=cp["sample_values"],
+            null_rate=cp.get("null_rate", 0.0),
+            unique_ratio=cp.get("unique_ratio", 0.0),
+            min_value=cp.get("min_value"),
+            max_value=cp.get("max_value"),
+            mean=cp.get("mean"),
+            median=cp.get("median"),
+            p05=cp.get("p05"),
+            p95=cp.get("p95"),
+            outlier_count=cp.get("outlier_count", 0),
+            outlier_rate=cp.get("outlier_rate", 0.0),
+            top_values=cp.get("top_values", []),
         )
         db.add(sc)
     db.commit()

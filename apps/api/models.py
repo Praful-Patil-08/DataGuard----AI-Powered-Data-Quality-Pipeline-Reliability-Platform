@@ -51,6 +51,19 @@ class SchemaColumn(Base):
     unique_count = Column(Integer, default=0)
     null_count = Column(Integer, default=0)
     sample_values = Column(JSON, default=list)
+    # Adapted from Watchtower: extended profiling fields for drift detection
+    null_rate = Column(Float, default=0.0)
+    unique_ratio = Column(Float, default=0.0)
+    # Numeric statistics (only for INTEGER/FLOAT columns) - IQR-based outlier detection
+    min_value = Column(Float, nullable=True)
+    max_value = Column(Float, nullable=True)
+    mean = Column(Float, nullable=True)
+    median = Column(Float, nullable=True)
+    p05 = Column(Float, nullable=True)
+    p95 = Column(Float, nullable=True)
+    outlier_count = Column(Integer, nullable=True, default=0)
+    outlier_rate = Column(Float, nullable=True, default=0.0)
+    top_values = Column(JSON, default=list)
 
     schema_rel = relationship("SchemaRecord", back_populates="columns")
 

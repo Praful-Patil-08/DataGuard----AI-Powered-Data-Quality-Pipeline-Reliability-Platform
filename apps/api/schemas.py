@@ -30,6 +30,18 @@ class SchemaColumnResponse(BaseModel):
     unique_count: int
     null_count: int
     sample_values: List[Any] = []
+    # Watchtower-adapted extended profiling
+    null_rate: float = 0.0
+    unique_ratio: float = 0.0
+    min_value: Optional[float] = None
+    max_value: Optional[float] = None
+    mean: Optional[float] = None
+    median: Optional[float] = None
+    p05: Optional[float] = None
+    p95: Optional[float] = None
+    outlier_count: Optional[int] = 0
+    outlier_rate: Optional[float] = 0.0
+    top_values: List[Any] = []
     model_config = ConfigDict(from_attributes=True)
 
 class SchemaResponse(BaseModel):

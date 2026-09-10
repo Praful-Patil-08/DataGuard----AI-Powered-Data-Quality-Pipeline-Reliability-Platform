@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 
-from database import engine, Base, get_db
+from database import engine, Base, get_db, run_migrations
 import models
 import schemas
 from scanner import parse_dataset_content, profile_dataframe
@@ -15,13 +15,14 @@ from quality import run_quality_checks
 from lineage import get_downstream_impact, DEFAULT_LINEAGE_MAP, get_lineage_config, is_demo_lineage, CONFIG_PATH
 from ai import run_ai_analyst
 import json as _json
+from storage_backend import save_file, load_file, STORAGE_DIR
 
-# Storage for uploaded datasets to enable quality checks during scan
-STORAGE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "storage")
-os.makedirs(STORAGE_DIR, exist_ok=True)
-
-# Create all database tables on application startup
+# Create all database tables + lightweight migrations on startup
 models.Base.metadata.create_all(bind=engine)
+try:
+    run_migrations()
+except Exception:
+    pass
 
 app = FastAPI(
     title="DataGuard API",
@@ -120,11 +121,9 @@ async def upload_dataset(
     db.commit()
     db.refresh(dataset)
 
-    # Persist raw file for quality checks during scan (deterministic engine remains data-aware)
+    # Persist raw file for quality checks during scan (abstraction supports S3)
     try:
-        storage_path = os.path.join(STORAGE_DIR, f"{dataset.id}_{filename}")
-        with open(storage_path, "wb") as out:
-            out.write(content)
+        save_file(dataset.id, filename, content)
     except Exception:
         pass  # Non-critical: scan will fallback to metadata-only checks
 
@@ -841,9 +840,7 @@ def seed_demo_dataset(sample_name: str, db: Session = Depends(get_db)):
 
     # Persist demo file for quality checks
     try:
-        storage_path = os.path.join(STORAGE_DIR, f"{dataset.id}_{filename}")
-        with open(storage_path, "wb") as out:
-            out.write(content)
+        save_file(dataset.id, filename, content)
     except Exception:
         pass
 

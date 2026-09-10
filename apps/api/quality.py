@@ -4,14 +4,21 @@ from typing import List, Dict, Any
 
 def run_quality_checks(
     df: pd.DataFrame,
+    dataset_name: str = None,
     primary_key_candidates: List[str] = None,
     null_threshold: float = 0.0, # Flag any null in key fields or >5% in others
     outlier_std_multiplier: float = 3.0
 ) -> List[Dict[str, Any]]:
     """
     Executes deterministic data quality checks on a DataFrame.
+    Uses Dataset Contract for correct PK semantics (entity vs fact/event).
     Returns a list of structured issue dictionaries.
     """
+    # Backward compat: if dataset_name is passed as list (old positional), shift
+    if isinstance(dataset_name, list):
+        primary_key_candidates = dataset_name
+        dataset_name = None
+
     issues = []
     total_rows = len(df)
     if total_rows == 0:
@@ -23,40 +30,79 @@ def run_quality_checks(
             "metadata": {}
         }]
 
-    # Auto-detect likely primary key candidates if not specified
-    if not primary_key_candidates:
-        primary_key_candidates = [
-            c for c in df.columns if c.lower().endswith("_id") or c.lower() == "id"
-        ]
+    # Resolve primary key candidates via contract (correct) vs heuristic (legacy)
+    if primary_key_candidates is None:
+        if dataset_name:
+            try:
+                from contracts import get_primary_key_columns
+                pk = get_primary_key_columns(dataset_name)
+                if pk is None:
+                    primary_key_candidates = []  # no PK enforcement (fact/dimension or unknown)
+                else:
+                    primary_key_candidates = pk
+            except Exception:
+                primary_key_candidates = []
+        else:
+            # No dataset_name and no explicit candidates: fallback to old heuristic for backward compat
+            # This path is used by legacy tests; real uploads should pass dataset_name
+            primary_key_candidates = [
+                c for c in df.columns if c.lower().endswith("_id") or c.lower() == "id"
+            ]
 
-    # 1. Primary Key and ID Checks (Duplicate & Null)
-    for pk_col in primary_key_candidates:
-        if pk_col in df.columns:
-            series = df[pk_col]
-            # Null check on primary key
-            null_count = int(series.isna().sum())
-            if null_count > 0:
-                pct = round((null_count / total_rows) * 100, 2)
-                issues.append({
-                    "issue_type": "PRIMARY_KEY_NULL",
-                    "severity": "CRITICAL",
-                    "column_name": pk_col,
-                    "description": f"Primary key/ID column '{pk_col}' contains {null_count} ({pct}%) NULL values.",
-                    "metadata": {"null_count": null_count, "null_pct": pct}
-                })
+    # 1. Primary Key and ID Checks (Duplicate & Null) — contract-aware
+    # Handle composite PK
+    if len(primary_key_candidates) > 1 and all(col in df.columns for col in primary_key_candidates):
+        # Composite: null if any part is null, duplicate if combination repeats
+        composite_null = int(df[primary_key_candidates].isna().any(axis=1).sum())
+        if composite_null > 0:
+            pct = round((composite_null / total_rows) * 100, 2)
+            issues.append({
+                "issue_type": "PRIMARY_KEY_NULL",
+                "severity": "CRITICAL",
+                "column_name": ", ".join(primary_key_candidates),
+                "description": f"Composite primary key ({', '.join(primary_key_candidates)}) contains {composite_null} ({pct}%) rows with NULL in key columns.",
+                "metadata": {"null_count": composite_null, "null_pct": pct, "columns": primary_key_candidates}
+            })
+        # duplicate composite
+        non_null_composite = df.dropna(subset=primary_key_candidates)
+        dupe_count = int(non_null_composite.duplicated(subset=primary_key_candidates).sum())
+        if dupe_count > 0:
+            pct = round((dupe_count / total_rows) * 100, 2)
+            issues.append({
+                "issue_type": "DUPLICATE_PRIMARY_KEY",
+                "severity": "CRITICAL",
+                "column_name": ", ".join(primary_key_candidates),
+                "description": f"Composite primary key ({', '.join(primary_key_candidates)}) has {dupe_count} ({pct}%) duplicate combinations.",
+                "metadata": {"duplicate_count": dupe_count, "duplicate_pct": pct, "columns": primary_key_candidates}
+            })
+    else:
+        for pk_col in primary_key_candidates:
+            if pk_col in df.columns:
+                series = df[pk_col]
+                # Null check on primary key
+                null_count = int(series.isna().sum())
+                if null_count > 0:
+                    pct = round((null_count / total_rows) * 100, 2)
+                    issues.append({
+                        "issue_type": "PRIMARY_KEY_NULL",
+                        "severity": "CRITICAL",
+                        "column_name": pk_col,
+                        "description": f"Primary key/ID column '{pk_col}' contains {null_count} ({pct}%) NULL values.",
+                        "metadata": {"null_count": null_count, "null_pct": pct}
+                    })
 
-            # Duplicate check on primary key
-            non_null = series.dropna()
-            dupe_count = int(non_null.duplicated().sum())
-            if dupe_count > 0:
-                pct = round((dupe_count / total_rows) * 100, 2)
-                issues.append({
-                    "issue_type": "DUPLICATE_PRIMARY_KEY",
-                    "severity": "CRITICAL",
-                    "column_name": pk_col,
-                    "description": f"Primary key/ID column '{pk_col}' has {dupe_count} ({pct}%) duplicate values.",
-                    "metadata": {"duplicate_count": dupe_count, "duplicate_pct": pct}
-                })
+                # Duplicate check on primary key
+                non_null = series.dropna()
+                dupe_count = int(non_null.duplicated().sum())
+                if dupe_count > 0:
+                    pct = round((dupe_count / total_rows) * 100, 2)
+                    issues.append({
+                        "issue_type": "DUPLICATE_PRIMARY_KEY",
+                        "severity": "CRITICAL",
+                        "column_name": pk_col,
+                        "description": f"Primary key/ID column '{pk_col}' has {dupe_count} ({pct}%) duplicate values.",
+                        "metadata": {"duplicate_count": dupe_count, "duplicate_pct": pct}
+                    })
 
     # 2. General Duplicate Rows
     entire_dupes = int(df.duplicated().sum())

@@ -1,0 +1,77 @@
+{
+  "customers": {
+    "table_type": "entity",
+    "primary_key": ["customer_id"],
+    "description": "Entity table — customer_id must be unique"
+  },
+  "orders": {
+    "table_type": "entity",
+    "primary_key": ["order_id"],
+    "description": "Entity table — order_id unique"
+  },
+  "order_items": {
+    "table_type": "fact",
+    "primary_key": ["order_id", "product_id"],
+    "description": "Fact table — order_id and product_id repeat; composite (order_id, product_id) must be unique"
+  },
+  "products": {
+    "table_type": "entity",
+    "primary_key": ["product_id"],
+    "description": "Entity table — product_id unique"
+  },
+  "events": {
+    "table_type": "event",
+    "primary_key": ["event_id"],
+    "description": "Event table — event_id unique, user_id is FK and repeats"
+  },
+  "sellers": {
+    "table_type": "entity",
+    "primary_key": ["seller_id"],
+    "description": "Entity table — seller_id unique"
+  },
+  "olist_customers_dataset": {
+    "table_type": "entity",
+    "primary_key": ["customer_id"],
+    "description": "Olist customers — customer_id unique"
+  },
+  "olist_orders_dataset": {
+    "table_type": "entity",
+    "primary_key": ["order_id"],
+    "description": "Olist orders — order_id unique"
+  },
+  "olist_order_items_dataset": {
+    "table_type": "fact",
+    "primary_key": ["order_id", "order_item_id"],
+    "description": "Olist order_items — composite (order_id, order_item_id) unique; order_id and product_id individually repeat"
+  },
+  "olist_products_dataset": {
+    "table_type": "entity",
+    "primary_key": ["product_id"],
+    "description": "Olist products — product_id unique"
+  },
+  "olist_sellers_dataset": {
+    "table_type": "entity",
+    "primary_key": ["seller_id"],
+    "description": "Olist sellers — seller_id unique"
+  },
+  "olist_order_payments_dataset": {
+    "table_type": "fact",
+    "primary_key": ["order_id", "payment_sequential"],
+    "description": "Olist payments — composite (order_id, payment_sequential) unique"
+  },
+  "olist_order_reviews_dataset": {
+    "table_type": "entity",
+    "primary_key": ["review_id"],
+    "description": "Olist reviews — review_id unique, order_id FK repeats"
+  },
+  "olist_geolocation_dataset": {
+    "table_type": "dimension",
+    "primary_key": null,
+    "description": "Geolocation — no strict PK, zip prefix repeats"
+  },
+  "product_category_name_translation": {
+    "table_type": "dimension",
+    "primary_key": ["product_category_name"],
+    "description": "Translation — product_category_name unique"
+  }
+}

@@ -311,7 +311,7 @@ def scan_dataset(
             with open(stored_path, "rb") as fh:
                 content = fh.read()
             df_quality = parse_dataset_content(content, dataset.filename or stored_path)
-            q_issues = run_quality_checks(df_quality)
+            q_issues = run_quality_checks(df_quality, dataset_name=dataset.name)
             all_issues.extend(q_issues)
             quality_ran = True
     except Exception:

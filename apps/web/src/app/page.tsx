@@ -34,8 +34,8 @@ export default function Dashboard() {
       const [statsRes, scansRes, trendRes, topRes, impactRes] = await Promise.all([
         fetch(`${API_BASE}/api/dashboard/stats`),
         fetch(`${API_BASE}/api/scans`),
-        fetch(`${API_BASE}/api/dashboard/reliability-trend?days=14`),
-        fetch(`${API_BASE}/api/dashboard/top-issues?limit=3`),
+        fetch(`${API_BASE}/api/dashboard/reliability-trend?days=30`),
+        fetch(`${API_BASE}/api/dashboard/top-issues?limit=5`),
         fetch(`${API_BASE}/api/dashboard/business-impact`),
       ]);
 

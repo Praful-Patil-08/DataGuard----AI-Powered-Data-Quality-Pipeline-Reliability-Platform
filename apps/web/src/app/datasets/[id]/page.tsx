@@ -16,15 +16,20 @@ export default function DatasetDetailPage() {
   const [scans, setScans] = useState<any[]>([]);
   const [tab, setTab] = useState<"overview"|"schema"|"quality"|"history"|"lineage">("overview");
   const [loading, setLoading] = useState(true);
+  const [baselineOpt, setBaselineOpt] = useState<any[]>([]);
+  const [selectedBaseline, setSelectedBaseline] = useState<string>("");
+  const [scanning, setScanning] = useState(false);
+  const [scanMsg, setScanMsg] = useState<string | null>(null);
 
   useEffect(() => {
     const load = async () => {
       try {
-        const [dsRes, schRes, histRes, scansRes] = await Promise.all([
+        const [dsRes, schRes, histRes, scansRes, allDsRes] = await Promise.all([
           fetch(`${API_BASE}/api/datasets/${id}`),
           fetch(`${API_BASE}/api/datasets/${id}/schema`),
           fetch(`${API_BASE}/api/datasets/${id}/history`),
           fetch(`${API_BASE}/api/datasets/${id}/scans`),
+          fetch(`${API_BASE}/api/datasets`),
         ]);
         if (dsRes.ok) setDataset(await dsRes.json());
         if (schRes.ok) setSchema(await schRes.json());
@@ -33,10 +38,36 @@ export default function DatasetDetailPage() {
           setHistory(h.history || []);
         }
         if (scansRes.ok) setScans(await scansRes.json());
+        if (allDsRes.ok) {
+          const all = await allDsRes.json();
+          setBaselineOpt(all.filter((d:any)=> String(d.id)!==String(id)));
+        }
       } finally { setLoading(false); }
     };
     if (id) load();
   }, [id]);
+
+  const triggerScan = async () => {
+    setScanning(true);
+    setScanMsg("Running deterministic scan…");
+    try {
+      const url = selectedBaseline ? `${API_BASE}/api/datasets/${id}/scan?baseline_dataset_id=${selectedBaseline}` : `${API_BASE}/api/datasets/${id}/scan`;
+      const r = await fetch(url, { method: "POST" });
+      if (!r.ok) throw new Error((await r.json()).detail || "Scan failed");
+      const sc = await r.json();
+      setScanMsg(`Scan #${sc.id} ${sc.incident_severity} — ${sc.incident_summary?.slice(0,60)}`);
+      // refresh
+      const [histRes, scansRes] = await Promise.all([
+        fetch(`${API_BASE}/api/datasets/${id}/history`),
+        fetch(`${API_BASE}/api/datasets/${id}/scans`),
+      ]);
+      if (histRes.ok) setHistory((await histRes.json()).history || []);
+      if (scansRes.ok) setScans(await scansRes.json());
+      // auto-analyze
+      await fetch(`${API_BASE}/api/scans/${sc.id}/analyze`, { method: "POST" });
+    } catch (e:any) { setScanMsg(`Error: ${e.message}`); }
+    finally { setScanning(false); setTimeout(()=>setScanMsg(null), 4000); }
+  };
 
   if (loading) return <div className="py-20 text-center text-xs font-mono text-slate-400">Loading dataset…</div>;
   if (!dataset) return <div className="py-20 text-center text-slate-300">Dataset #{id} not found. <Link href="/datasets" className="text-emerald-400">Back</Link></div>;
@@ -73,7 +104,8 @@ export default function DatasetDetailPage() {
       </div>
 
       {tab === "overview" && (
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <>
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div className="lg:col-span-2 space-y-4">
             <div className="rounded-[1.5rem] p-1 bg-white/[0.03] ring-1 ring-white/10">
               <div className="rounded-[calc(1.5rem-0.25rem)] bg-gradient-to-b from-slate-900/90 to-slate-950 p-6">
@@ -110,6 +142,26 @@ export default function DatasetDetailPage() {
             </div>
           </div>
         </div>
+        {/* Explicit baseline scan trigger — replaces fuzzy auto-baseline */}
+        <div className="rounded-[1.5rem] p-1 bg-white/[0.03] ring-1 ring-white/10">
+          <div className="rounded-[calc(1.5rem-0.25rem)] bg-gradient-to-b from-slate-900/90 to-slate-950 p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div>
+              <h4 className="text-xs font-bold text-white tracking-tight">Trigger Scan</h4>
+              <p className="text-[11px] text-slate-400 mt-1">Select baseline to run Watchtower gate (row/null/numeric/cardinality) before approval.</p>
+            </div>
+            <div className="flex items-center gap-2 w-full sm:w-auto">
+              <select value={selectedBaseline} onChange={e=>setSelectedBaseline(e.target.value)} className="flex-1 sm:w-48 px-3 py-1.5 rounded-full bg-black/40 border border-white/10 text-xs text-white focus:outline-none focus:ring-2 focus:ring-emerald-400">
+                <option value="">Auto (fuzzy prefix)</option>
+                {baselineOpt.map((d:any)=><option key={d.id} value={d.id}>{d.name} #{d.id}</option>)}
+              </select>
+              <button onClick={triggerScan} disabled={scanning} className="px-4 py-1.5 rounded-full bg-emerald-500 hover:bg-emerald-400 text-emerald-950 text-xs font-bold flex items-center gap-2 disabled:opacity-50">
+                {scanning ? "Scanning…" : "Scan"} <History className="w-3 h-3" />
+              </button>
+            </div>
+          </div>
+          {scanMsg && <div className="mt-3 text-xs font-mono text-emerald-300 px-1">{scanMsg}</div>}
+        </div>
+        </>
       )}
 
       {tab === "schema" && (
@@ -160,20 +212,51 @@ export default function DatasetDetailPage() {
       )}
 
       {tab === "history" && (
-        <div className="rounded-[1.5rem] p-1 bg-white/[0.03] ring-1 ring-white/10">
-          <div className="rounded-[calc(1.5rem-0.25rem)] bg-gradient-to-b from-slate-900/90 to-slate-950 overflow-hidden">
-            <div className="p-5 border-b border-white/10"><h3 className="text-sm font-bold text-white">Scan History • {history.length} scans</h3></div>
-            <div className="divide-y divide-white/5">
-              {history.length===0 ? <div className="p-10 text-center text-xs text-slate-400">No history.</div> : history.slice().reverse().map((h:any)=>(
-                <div key={h.scan_id} className="p-4 flex items-center justify-between hover:bg-white/[0.02]">
-                  <div>
-                    <div className="text-xs font-mono font-bold text-white">Scan #{h.scan_id} <span className={`ml-2 px-2 py-0.5 rounded-full text-[10px] border font-mono ${h.incident_severity==='CRITICAL'?'bg-rose-500/10 text-rose-300 border-rose-500/20':h.incident_severity==='WARNING'?'bg-amber-500/10 text-amber-300 border-amber-500/20':'bg-emerald-500/10 text-emerald-300 border-emerald-500/20'}`}>{h.incident_severity}</span></div>
-                    <div className="text-xs text-slate-300 mt-1 line-clamp-1">{h.incident_summary}</div>
-                    <div className="text-[11px] font-mono text-slate-500 mt-1">{new Date(h.created_at).toLocaleString()} • {h.critical_count} crit • {h.warning_count} warn</div>
-                  </div>
-                  <Link href={`/scans/${h.scan_id}`} className="ml-4 px-3 py-1 rounded-full bg-white/5 border border-white/10 text-xs text-slate-300 hover:text-white">View</Link>
+        <div className="space-y-4">
+          {/* History trend sparkline */}
+          {history.length > 1 && (
+            <div className="rounded-[1.5rem] p-1 bg-white/[0.03] ring-1 ring-white/10">
+              <div className="rounded-[calc(1.5rem-0.25rem)] bg-gradient-to-b from-slate-900/90 to-slate-950 p-4">
+                <div className="text-[10px] uppercase tracking-widest font-semibold text-slate-400">Trend — critical over time</div>
+                <div className="mt-3 flex items-end gap-1 h-12">
+                  {history.map((h:any,i:number)=>{
+                    const max = Math.max(1, ...history.map((x:any)=> x.critical_count + x.warning_count));
+                    const hPct = ((h.critical_count)/max)*100;
+                    const wPct = ((h.warning_count)/max)*100;
+                    return (
+                      <div key={h.scan_id} className="flex-1 flex flex-col justify-end gap-0.5" title={`#${h.scan_id} ${h.incident_severity}`}>
+                        <div className="bg-rose-500/70 rounded-sm" style={{height: `${hPct}%`, minHeight: h.critical_count? '4px':'0'}} />
+                        <div className="bg-amber-500/60 rounded-sm" style={{height: `${wPct}%`, minHeight: h.warning_count? '3px':'0'}} />
+                        <div className="text-[8px] font-mono text-slate-500 text-center truncate">#{h.scan_id}</div>
+                      </div>
+                    );
+                  })}
                 </div>
-              ))}
+              </div>
+            </div>
+          )}
+          <div className="rounded-[1.5rem] p-1 bg-white/[0.03] ring-1 ring-white/10">
+            <div className="rounded-[calc(1.5rem-0.25rem)] bg-gradient-to-b from-slate-900/90 to-slate-950 overflow-hidden">
+              <div className="p-5 border-b border-white/10 flex items-center justify-between">
+                <h3 className="text-sm font-bold text-white">Scan History • {history.length} scans</h3>
+                <span className="text-[11px] font-mono text-slate-400">Newest first • gate via scan detail</span>
+              </div>
+              <div className="divide-y divide-white/5">
+                {history.length===0 ? <div className="p-10 text-center text-xs text-slate-400">No history. Trigger a scan above.</div> : history.slice().reverse().map((h:any)=>(
+                  <div key={h.scan_id} className="p-4 flex items-center justify-between hover:bg-white/[0.02]">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-xs font-mono font-bold text-white">Scan #{h.scan_id}</span>
+                        <span className={`px-2 py-0.5 rounded-full text-[10px] border font-mono ${h.incident_severity==='CRITICAL'?'bg-rose-500/10 text-rose-300 border-rose-500/20':h.incident_severity==='WARNING'?'bg-amber-500/10 text-amber-300 border-amber-500/20':'bg-emerald-500/10 text-emerald-300 border-emerald-500/20'}`}>{h.incident_severity}</span>
+                        <span className="text-[11px] font-mono text-slate-500">{h.critical_count}c • {h.warning_count}w • {h.healthy_count}h</span>
+                      </div>
+                      <div className="text-xs text-slate-300 mt-1 line-clamp-1">{h.incident_summary}</div>
+                      <div className="text-[11px] font-mono text-slate-500 mt-1">{new Date(h.created_at).toLocaleString()}</div>
+                    </div>
+                    <Link href={`/scans/${h.scan_id}`} className="ml-4 shrink-0 px-3 py-1 rounded-full bg-white/5 border border-white/10 text-xs text-slate-300 hover:text-white">View</Link>
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
         </div>

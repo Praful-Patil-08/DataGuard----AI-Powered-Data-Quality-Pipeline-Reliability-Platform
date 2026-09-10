@@ -8,6 +8,8 @@ interface AIAnalysisProps {
     severity: string;
     root_cause: string;
     impact: string;
+    technical_impact?: string | null;
+    business_impact?: string | null;
     affected_assets: string[];
     recommended_action: string;
     confidence: number;
@@ -108,6 +110,37 @@ export const AIRecommendation = ({ analysis, remediation, onDecision }: AIAnalys
               {analysis.root_cause}
             </div>
           </div>
+
+          {/* Technical Impact */}
+          {(analysis.technical_impact || analysis.impact) && (
+            <div>
+              <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-cyan-400">
+                Technical Impact
+              </span>
+              <div className="text-sm text-cyan-200/90 mt-1 bg-cyan-950/20 border border-cyan-500/20 p-3.5 rounded-xl leading-relaxed">
+                {analysis.technical_impact || analysis.impact}
+                {analysis.affected_assets && analysis.affected_assets.length > 0 && (
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {analysis.affected_assets.map((a: string) => (
+                      <span key={a} className="text-[11px] px-2 py-1 rounded-full bg-white/5 border border-white/10 text-slate-300 font-mono">{a}</span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Business Impact */}
+          {analysis.business_impact && (
+            <div>
+              <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-amber-400">
+                Business Impact — What it means
+              </span>
+              <div className="text-sm text-amber-200/90 mt-1 bg-amber-950/20 border border-amber-500/20 p-3.5 rounded-xl leading-relaxed">
+                {analysis.business_impact}
+              </div>
+            </div>
+          )}
 
           {/* Recommended Remediation */}
           <div>

@@ -44,7 +44,7 @@ DataGuard is an end-to-end data reliability platform that detects schema drift a
 - **Frontend**: Next.js (App Router), TypeScript, Tailwind CSS, Lucide Icons
 - **Backend**: Python 3.12, FastAPI, SQLAlchemy 2.0, Pandas, NumPy
 - **Database**: PostgreSQL (with SQLite fallback for local unit tests)
-- **AI Agent**: OpenAI GPT-4o with structured Pydantic outputs & deterministic offline fallback
+- **AI Agent**: Provider-agnostic (OpenAI / Gemini / Mock fallback) with structured Pydantic outputs — `AI_PROVIDER=mock|openai|gemini`
 - **Orchestration**: Docker Compose
 
 ---
@@ -100,24 +100,17 @@ source .venv/bin/activate
 PYTHONPATH=. pytest tests/ -v
 ```
 
-All 7 core test suites execute without requiring network access or third-party API keys.
+16 tests (7 core + 9 Watchtower-adapted) execute hermetically without network or API keys.
 
 ---
 
-## 🎬 Repeatable Demo Walkthrough
+## 🎬 Repeatable Demo Walkthrough (60-sec)
 
-1. **Upload Baseline (`sample-data/orders_v1.csv`)**:
-   - Ingests cleanly.
-   - Status: 🟢 **HEALTHY** (0 critical issues).
-2. **Upload Drifted Dataset (`sample-data/orders_v2_schema_drift.csv`)**:
-   - Deterministic engine flags:
-     - ❌ `order_value` column removed.
-     - ⚠️ `order_amount` column added.
-     - ❌ `discount` datatype drifted: `FLOAT` → `STRING`.
-   - Status: 🔴 **CRITICAL**.
-3. **AI Analyst Reasoning**:
-   - Evaluates scan findings and identifies probable root cause: upstream field rename from `order_value` to `order_amount`.
-4. **Downstream Lineage Impact**:
-   - Traces impact to `revenue_model`, `monthly_revenue`, and `Executive Revenue Dashboard`.
-5. **Human Approval**:
-   - The operator clicks **[Approve Remediation]** to record the migration decision in the audit log.
+1. **Baseline `orders_v1.csv`** → 🟢 **HEALTHY** — `incident_summary: Healthy profile change` • no business impact.
+2. **Schema drift `orders_v2_schema_drift.csv`** → 🔴 **CRITICAL** — `order_value` removed, `order_amount` added, `discount FLOAT→STRING`, null-rate + row-count drift. Gate `FAIL`.
+3. **Quality bugs `orders_bad_quality.csv`** → 🔴 **CRITICAL** — `NEGATIVE_VALUE_ANOMALY`, `DUPLICATE_PRIMARY_KEY`, `MALFORMED_DATE`, numeric distribution shift (`order_value` mean 842→4480).
+4. **What it means** — deterministic `incident_summary` + business impact: *“Revenue reporting at risk: Executive Dashboard will be understated”* with lineage `orders.order_value → revenue_model → Executive Revenue Dashboard` (demo lineage flag).
+5. **AI Analyst** — explains rename hypothesis, technical + business impact separately, recommends mapping. Provider-agnostic (`mock` by default, `gemini`/`openai` if key set).
+6. **Human Approval** → `[Approve]` records `decision_by/at/notes` → visible in `/audit` trail.
+
+**Control Center:** Overview shows *Reliability Trend* (wavy 14d), *Top Active Issues*, *Business Impact* (Revenue/Customer/Margin at risk), Datasets with health/history, and Scan detail ordered WHAT→WHY→AFFECTED→IMPACT→ACTION.

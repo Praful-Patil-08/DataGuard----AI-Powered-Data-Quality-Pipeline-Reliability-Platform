@@ -29,7 +29,21 @@ export const Navbar = () => {
             className="flex items-center space-x-1.5 px-3.5 py-1.5 rounded-full text-xs font-medium text-slate-300 hover:text-white hover:bg-white/5 transition-all"
           >
             <Database className="w-3.5 h-3.5 text-emerald-400" />
-            <span>Telemetry</span>
+            <span>Overview</span>
+          </Link>
+          <Link
+            href="/datasets"
+            className="flex items-center space-x-1.5 px-3.5 py-1.5 rounded-full text-xs font-medium text-slate-300 hover:text-white hover:bg-white/5 transition-all"
+          >
+            <Cpu className="w-3.5 h-3.5 text-cyan-400" />
+            <span>Datasets</span>
+          </Link>
+          <Link
+            href="/audit"
+            className="flex items-center space-x-1.5 px-3.5 py-1.5 rounded-full text-xs font-medium text-slate-300 hover:text-white hover:bg-white/5 transition-all"
+          >
+            <ShieldCheck className="w-3.5 h-3.5 text-amber-400" />
+            <span>Audit</span>
           </Link>
           <a
             href="http://localhost:8001/docs"

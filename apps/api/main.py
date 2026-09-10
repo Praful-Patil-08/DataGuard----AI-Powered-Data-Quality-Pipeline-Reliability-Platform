@@ -10,9 +10,9 @@ from database import engine, Base, get_db
 import models
 import schemas
 from scanner import parse_dataset_content, profile_dataframe
-from drift import detect_schema_drift
+from drift import detect_schema_drift, generate_incident_summary, assess_gate
 from quality import run_quality_checks
-from lineage import get_downstream_impact
+from lineage import get_downstream_impact, DEFAULT_LINEAGE_MAP
 from ai import run_ai_analyst
 
 # Storage for uploaded datasets to enable quality checks during scan
@@ -340,12 +340,28 @@ def scan_dataset(
     if healthy_count < 0:
         healthy_count = 0
 
+    # Generate human-readable incident summary (Watchtower-adapted)
+    try:
+        baseline_rc = baseline_dataset.row_count if baseline_dataset else None
+        incident_summary, incident_severity = generate_incident_summary(
+            all_issues, baseline_row_count=baseline_rc, current_row_count=dataset.row_count
+        )
+    except Exception:
+        incident_summary, incident_severity = ("Healthy profile change: no material drift detected.", "INFO")
+        if critical_count > 0:
+            incident_severity = "CRITICAL"
+        elif warning_count > 0:
+            incident_severity = "WARNING"
+
     scan = models.Scan(
         dataset_id=dataset_id,
+        baseline_dataset_id=baseline_dataset.id if baseline_dataset else None,
         status="COMPLETED",
         healthy_count=healthy_count,
         warning_count=warning_count,
         critical_count=critical_count,
+        incident_summary=incident_summary,
+        incident_severity=incident_severity,
         started_at=datetime.datetime.now(datetime.timezone.utc),
         completed_at=datetime.datetime.now(datetime.timezone.utc)
     )
@@ -383,6 +399,185 @@ def get_scan(scan_id: int, db: Session = Depends(get_db)):
 def get_scan_issues(scan_id: int, db: Session = Depends(get_db)):
     return db.query(models.Issue).filter(models.Issue.scan_id == scan_id).all()
 
+@app.get("/api/scans/{scan_id}/gate", response_model=schemas.GateResponse)
+def get_scan_gate(
+    scan_id: int,
+    allowed_severity: str = "WARNING",
+    max_row_count_drop_ratio: float = 0.15,
+    max_null_drift_count: int = 0,
+    max_numeric_drift_count: int = 0,
+    max_cardinality_drift_count: int = 0,
+    db: Session = Depends(get_db)
+):
+    scan = db.query(models.Scan).filter(models.Scan.id == scan_id).first()
+    if not scan:
+        raise HTTPException(status_code=404, detail="Scan not found")
+    issues = db.query(models.Issue).filter(models.Issue.scan_id == scan_id).all()
+    issues_data = [{"issue_type": i.issue_type, "severity": i.severity, "metadata": i.issue_metadata or {}} for i in issues]
+    baseline_rc = None
+    if scan.baseline_dataset_id:
+        base_ds = db.query(models.Dataset).filter(models.Dataset.id == scan.baseline_dataset_id).first()
+        if base_ds:
+            baseline_rc = base_ds.row_count
+    gate = assess_gate(
+        issues_data,
+        scan.incident_severity or "INFO",
+        baseline_row_count=baseline_rc,
+        current_row_count=scan.dataset.row_count if scan.dataset else None,
+        allowed_severity=allowed_severity,
+        max_row_count_drop_ratio=max_row_count_drop_ratio,
+        max_null_drift_count=max_null_drift_count,
+        max_numeric_drift_count=max_numeric_drift_count,
+        max_cardinality_drift_count=max_cardinality_drift_count,
+    )
+    return gate
+
+@app.get("/api/datasets/{dataset_id}/scans", response_model=List[schemas.ScanResponse])
+def list_dataset_scans(dataset_id: int, db: Session = Depends(get_db)):
+    ds = db.query(models.Dataset).filter(models.Dataset.id == dataset_id).first()
+    if not ds:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    return db.query(models.Scan).filter(models.Scan.dataset_id == dataset_id).order_by(desc(models.Scan.completed_at)).all()
+
+@app.get("/api/datasets/{dataset_id}/history")
+def get_dataset_history(dataset_id: int, db: Session = Depends(get_db)):
+    ds = db.query(models.Dataset).filter(models.Dataset.id == dataset_id).first()
+    if not ds:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    scans = db.query(models.Scan).filter(models.Scan.dataset_id == dataset_id).order_by(models.Scan.completed_at.asc()).all()
+    points = []
+    for s in scans:
+        points.append({
+            "scan_id": s.id,
+            "created_at": s.completed_at.isoformat() if s.completed_at else None,
+            "incident_severity": s.incident_severity,
+            "critical_count": s.critical_count,
+            "warning_count": s.warning_count,
+            "healthy_count": s.healthy_count,
+            "incident_summary": s.incident_summary,
+        })
+    return {"dataset_id": dataset_id, "dataset_name": ds.name, "history": points}
+
+@app.get("/api/dashboard/reliability-trend", response_model=List[schemas.ReliabilityTrendPoint])
+def get_reliability_trend(days: int = 30, db: Session = Depends(get_db)):
+    from datetime import timedelta
+    now = datetime.datetime.now(datetime.timezone.utc)
+    # Group scans by date
+    scans = db.query(models.Scan).order_by(models.Scan.completed_at.asc()).all()
+    # Bucket by day string
+    buckets: dict[str, dict] = {}
+    for s in scans:
+        d = s.completed_at.date().isoformat() if s.completed_at else now.date().isoformat()
+        if d not in buckets:
+            buckets[d] = {"healthy": 0, "warning": 0, "critical": 0, "total": 0}
+        if s.critical_count > 0:
+            buckets[d]["critical"] += 1
+        elif s.warning_count > 0:
+            buckets[d]["warning"] += 1
+        else:
+            buckets[d]["healthy"] += 1
+        buckets[d]["total"] += 1
+    # Ensure last `days` days are represented
+    trend = []
+    for i in range(days):
+        day = (now.date() - timedelta(days=days-1-i)).isoformat()
+        b = buckets.get(day, {"healthy": 0, "warning": 0, "critical": 0, "total": 0})
+        trend.append({"date": day, **b})
+    return trend
+
+@app.get("/api/dashboard/top-issues", response_model=List[schemas.TopIssueResponse])
+def get_top_issues(limit: int = 5, db: Session = Depends(get_db)):
+    issues = db.query(models.Issue).join(models.Scan).order_by(desc(models.Issue.id)).limit(limit*3).all()
+    # Filter to most recent critical/warning per scan
+    seen_scans = set()
+    top = []
+    for iss in issues:
+        if iss.scan_id in seen_scans and len(top) >= limit:
+            continue
+        scan = db.query(models.Scan).filter(models.Scan.id == iss.scan_id).first()
+        ds = scan.dataset if scan else None
+        if iss.severity in ("CRITICAL", "WARNING"):
+            top.append({
+                "scan_id": iss.scan_id,
+                "dataset_id": scan.dataset_id if scan else 0,
+                "dataset_name": ds.name if ds else "unknown",
+                "filename": ds.filename if ds else "",
+                "severity": iss.severity,
+                "issue_type": iss.issue_type,
+                "column_name": iss.column_name,
+                "description": iss.description,
+                "created_at": scan.completed_at if scan and scan.completed_at else datetime.datetime.now(datetime.timezone.utc),
+            })
+            seen_scans.add(iss.scan_id)
+        if len(top) >= limit:
+            break
+    return top[:limit]
+
+@app.get("/api/dashboard/business-impact", response_model=List[schemas.BusinessImpactResponse])
+def get_business_impact(db: Session = Depends(get_db)):
+    # Define KPI map — demo lineage → business KPIs
+    KPI_MAP = {
+        "revenue": {"kpi": "Revenue reporting", "description": "Monthly revenue, LTV, Executive Dashboard"},
+        "customer": {"kpi": "Customer segmentation", "description": "360 view, cohort retention, segmentation"},
+        "marketing": {"kpi": "Marketing attribution", "description": "Attribution, campaign ROI"},
+        "margin": {"kpi": "Margin analysis", "description": "Promotion effectiveness, profitability"},
+        "inventory": {"kpi": "Inventory health", "description": "Stock levels, fulfillment"},
+    }
+    scans = db.query(models.Scan).order_by(desc(models.Scan.completed_at)).limit(50).all()
+    # Aggregate per KPI
+    kpi_status: dict[str, dict] = {v["kpi"]: {"status": "HEALTHY", "datasets": set(), "columns": set(), "description": v["description"]} for v in KPI_MAP.values()}
+    # Map lineage keys to KPI
+    lineage_to_kpi = {
+        "orders.order_value": "Revenue reporting",
+        "orders.order_amount": "Revenue reporting",
+        "orders.customer_id": "Customer segmentation",
+        "orders.discount": "Margin analysis",
+        "orders.order_date": "Revenue reporting",
+        "customers.signup_date": "Customer segmentation",
+        "products.price": "Margin analysis",
+        "marketing.campaign_id": "Marketing attribution",
+        "inventory.stock": "Inventory health",
+    }
+    for scan in scans:
+        if scan.critical_count == 0 and scan.warning_count == 0:
+            continue
+        issues = db.query(models.Issue).filter(models.Issue.scan_id == scan.id).all()
+        for iss in issues:
+            if not iss.column_name:
+                continue
+            key = f"{scan.dataset.name.lower()}.{iss.column_name.lower()}"
+            kpi = lineage_to_kpi.get(key)
+            if not kpi:
+                # fallback heuristic
+                if "revenue" in iss.column_name.lower() or "order_value" in iss.column_name.lower() or "order_amount" in iss.column_name.lower():
+                    kpi = "Revenue reporting"
+                elif "customer" in iss.column_name.lower():
+                    kpi = "Customer segmentation"
+                elif "discount" in iss.column_name.lower() or "margin" in iss.column_name.lower():
+                    kpi = "Margin analysis"
+                else:
+                    continue
+            entry = kpi_status[kpi]
+            entry["datasets"].add(scan.dataset.name)
+            entry["columns"].add(iss.column_name)
+            if iss.severity == "CRITICAL":
+                entry["status"] = "CRITICAL"
+            elif entry["status"] != "CRITICAL" and iss.severity == "WARNING":
+                entry["status"] = "AT RISK"
+    result = []
+    for kpi, v in kpi_status.items():
+        result.append({
+            "kpi": kpi,
+            "status": v["status"],
+            "affected_datasets": sorted(list(v["datasets"])),
+            "affected_columns": sorted(list(v["columns"])),
+            "description": v["description"],
+        })
+    # Order: CRITICAL first, AT RISK, then HEALTHY
+    order = {"CRITICAL": 0, "AT RISK": 1, "HEALTHY": 2}
+    result.sort(key=lambda x: order.get(x["status"], 3))
+    return result
+
 # ----------------- AI Analyst & Remediations -----------------
 @app.post("/api/scans/{scan_id}/analyze", response_model=schemas.AIAnalysisResponse)
 def analyze_scan_with_ai(scan_id: int, db: Session = Depends(get_db)):
@@ -417,6 +612,8 @@ def analyze_scan_with_ai(scan_id: int, db: Session = Depends(get_db)):
         summary=analysis_dict["summary"],
         root_cause=analysis_dict["root_cause"],
         impact=" -> ".join(analysis_dict["affected_assets"]) if analysis_dict["affected_assets"] else "None",
+        technical_impact=analysis_dict.get("technical_impact") or " -> ".join(analysis_dict["affected_assets"]) if analysis_dict["affected_assets"] else "None",
+        business_impact=analysis_dict.get("business_impact") or "No business impact calculated.",
         affected_assets=analysis_dict["affected_assets"],
         recommended_action=analysis_dict["recommended_action"],
         confidence=analysis_dict["confidence"],
@@ -442,6 +639,8 @@ def analyze_scan_with_ai(scan_id: int, db: Session = Depends(get_db)):
         severity=ai_record.severity,
         root_cause=ai_record.root_cause,
         impact=ai_record.impact,
+        technical_impact=ai_record.technical_impact,
+        business_impact=ai_record.business_impact,
         affected_assets=ai_record.affected_assets,
         recommended_action=ai_record.recommended_action,
         confidence=ai_record.confidence,
@@ -490,11 +689,43 @@ def reject_remediation(
 def get_column_lineage(dataset_name: str, column_name: str):
     assets = get_downstream_impact(dataset_name, column_name)
     downstream = [schemas.DownstreamAsset(**a) for a in assets]
+    is_demo = f"{dataset_name.lower()}.{column_name.lower()}" in DEFAULT_LINEAGE_MAP
     return schemas.ColumnImpactResponse(
         column_name=column_name,
         dataset_name=dataset_name,
-        affected_assets=downstream
+        affected_assets=downstream,
+        is_demo=not is_demo or True,  # all demo for MVP; explicit flag
+        demo_note="Static demo lineage from lineage.py — replace with OpenLineage/dbt in production."
     )
+
+@app.get("/api/audit")
+def get_audit_trail(limit: int = 20, db: Session = Depends(get_db)):
+    scans = db.query(models.Scan).order_by(desc(models.Scan.completed_at)).limit(limit).all()
+    trail = []
+    for s in scans:
+        issues = db.query(models.Issue).filter(models.Issue.scan_id == s.id).all()
+        ai = db.query(models.AIAnalysis).filter(models.AIAnalysis.scan_id == s.id).order_by(desc(models.AIAnalysis.created_at)).first()
+        rems = db.query(models.Remediation).filter(models.Remediation.scan_id == s.id).all()
+        for r in rems:
+            trail.append({
+                "scan_id": s.id,
+                "dataset_id": s.dataset_id,
+                "dataset_name": s.dataset.name if s.dataset else "",
+                "incident_summary": s.incident_summary,
+                "incident_severity": s.incident_severity,
+                "issue_count": len(issues),
+                "ai_summary": ai.summary if ai else None,
+                "remediation_id": r.id,
+                "suggestion": r.suggestion,
+                "status": r.status,
+                "decision_by": r.decision_by,
+                "decision_at": r.decision_at.isoformat() if r.decision_at else None,
+                "notes": r.notes,
+                "scan_completed_at": s.completed_at.isoformat() if s.completed_at else None,
+            })
+    # sort by decision_at or scan time
+    trail.sort(key=lambda x: x["decision_at"] or x["scan_completed_at"] or "", reverse=True)
+    return trail
 
 # ----------------- 1-Click Interactive Demo Seed -----------------
 @app.post("/api/demo/seed/{sample_name}")

@@ -19,6 +19,7 @@ export default function ScanDetailPage() {
   const [issues, setIssues] = useState<any[]>([]);
   const [lineageAssets, setLineageAssets] = useState<any[]>([]);
   const [activeColumn, setActiveColumn] = useState<string>("order_value");
+  const [gate, setGate] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [analyzingAI, setAnalyzingAI] = useState(false);
 
@@ -29,6 +30,11 @@ export default function ScanDetailPage() {
       const scanData = await scanRes.json();
       setScan(scanData);
       setIssues(scanData.issues || []);
+      // fetch gate
+      try {
+        const gateRes = await fetch(`${API_BASE}/api/scans/${scanId}/gate`);
+        if (gateRes.ok) setGate(await gateRes.json());
+      } catch {}
 
       if (scanData.dataset_id) {
         const dsRes = await fetch(`${API_BASE}/api/datasets/${scanData.dataset_id}`);
@@ -200,7 +206,54 @@ export default function ScanDetailPage() {
         </div>
       </div>
 
-      {/* AI Analyst & Remediation Section */}
+      {/* WHAT HAPPENED — Deterministic Incident Summary (human-friendly, not error code) */}
+      {scan.incident_summary && (
+        <div className={`rounded-[1.75rem] p-1.5 ring-1 shadow-[0_12px_40px_rgba(0,0,0,0.5)] ${scan.incident_severity === 'CRITICAL' ? 'bg-rose-500/10 ring-rose-500/20' : scan.incident_severity === 'WARNING' ? 'bg-amber-500/10 ring-amber-500/20' : 'bg-emerald-500/10 ring-emerald-500/20'}`}>
+          <div className="rounded-[calc(1.75rem-0.375rem)] bg-gradient-to-b from-slate-900/90 to-slate-950 p-6 shadow-[inset_0_1px_1px_rgba(255,255,255,0.06)]">
+            <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className={`w-2 h-2 rounded-full ${scan.incident_severity === 'CRITICAL' ? 'bg-rose-400' : scan.incident_severity === 'WARNING' ? 'bg-amber-400' : 'bg-emerald-400'}`} />
+                  <span className={`text-[10px] font-bold uppercase tracking-[0.2em] ${scan.incident_severity === 'CRITICAL' ? 'text-rose-400' : scan.incident_severity === 'WARNING' ? 'text-amber-400' : 'text-emerald-400'}`}>What happened</span>
+                  {gate && (
+                    <span className={`ml-2 px-2 py-0.5 rounded-full text-[10px] font-mono font-bold border ${gate.passed ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/20' : 'bg-rose-500/10 text-rose-300 border-rose-500/20'}`}>
+                      GATE {gate.passed ? 'PASS' : 'FAIL'}
+                    </span>
+                  )}
+                </div>
+                <h3 className="text-sm font-bold text-white mt-2 leading-relaxed">{scan.incident_summary}</h3>
+                {scan.incident_severity === 'CRITICAL' && activeColumn && dataset && (
+                  <p className="text-xs text-rose-200/80 mt-2">
+                    <span className="font-mono font-semibold text-rose-300">{dataset.name}.{activeColumn}</span> may be at risk — downstream models and KPIs could be affected. See Business Impact below.
+                  </p>
+                )}
+              </div>
+              <span className={`shrink-0 px-3 py-1 rounded-full text-xs font-bold border font-mono ${scan.incident_severity === 'CRITICAL' ? 'bg-rose-500/15 text-rose-300 border-rose-500/30' : scan.incident_severity === 'WARNING' ? 'bg-amber-500/15 text-amber-300 border-amber-500/30' : 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'}`}>
+                {scan.incident_severity}
+              </span>
+            </div>
+            {gate && !gate.passed && gate.reasons && gate.reasons.length > 0 && (
+              <div className="mt-3 p-3 rounded-xl bg-black/40 border border-white/10 text-xs font-mono text-amber-300">
+                <span className="font-bold">Gate failures:</span> {gate.reasons.join(' • ')}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* WHAT CHANGED — Deterministic Schema Diff (before AI) */}
+      <SchemaDiff issues={issues} />
+
+      {/* WHAT IS AFFECTED — Lineage Impact Graph */}
+      {dataset && activeColumn && (
+        <ImpactGraph
+          columnName={activeColumn}
+          datasetName={dataset.name}
+          assets={lineageAssets}
+        />
+      )}
+
+      {/* WHY + BUSINESS IMPACT + WHAT TO DO — AI Analyst */}
       {latestAI ? (
         <AIRecommendation
           analysis={latestAI}
@@ -228,18 +281,6 @@ export default function ScanDetailPage() {
           </div>
         </div>
       )}
-
-      {/* Lineage Impact Graph */}
-      {dataset && activeColumn && (
-        <ImpactGraph
-          columnName={activeColumn}
-          datasetName={dataset.name}
-          assets={lineageAssets}
-        />
-      )}
-
-      {/* Deterministic Schema Diff & Quality Guardrails */}
-      <SchemaDiff issues={issues} />
     </div>
   );
 }

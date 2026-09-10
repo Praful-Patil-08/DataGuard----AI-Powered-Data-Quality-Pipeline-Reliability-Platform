@@ -4,6 +4,9 @@ import React, { useState, useEffect } from "react";
 import Link from "next/link";
 import { Upload, FileUp, Activity, CheckCircle, AlertTriangle, XCircle, ArrowRight, RefreshCw, Sparkles, Play, Shield } from "lucide-react";
 import { HealthCards } from "@/components/HealthCards";
+import { ReliabilityTrend } from "@/components/ReliabilityTrend";
+import { TopIssues } from "@/components/TopIssues";
+import { BusinessImpact } from "@/components/BusinessImpact";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8001";
 
@@ -18,15 +21,22 @@ export default function Dashboard() {
   });
 
   const [scans, setScans] = useState<any[]>([]);
+  const [trend, setTrend] = useState<any[]>([]);
+  const [topIssues, setTopIssues] = useState<any[]>([]);
+  const [businessImpact, setBusinessImpact] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [dashLoading, setDashLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [uploadMessage, setUploadMessage] = useState<string | null>(null);
 
   const fetchDashboardData = async () => {
     try {
-      const [statsRes, scansRes] = await Promise.all([
+      const [statsRes, scansRes, trendRes, topRes, impactRes] = await Promise.all([
         fetch(`${API_BASE}/api/dashboard/stats`),
         fetch(`${API_BASE}/api/scans`),
+        fetch(`${API_BASE}/api/dashboard/reliability-trend?days=14`),
+        fetch(`${API_BASE}/api/dashboard/top-issues?limit=3`),
+        fetch(`${API_BASE}/api/dashboard/business-impact`),
       ]);
 
       if (statsRes.ok) {
@@ -37,10 +47,14 @@ export default function Dashboard() {
         const scansData = await scansRes.json();
         setScans(scansData);
       }
+      if (trendRes.ok) setTrend(await trendRes.json());
+      if (topRes.ok) setTopIssues(await topRes.json());
+      if (impactRes.ok) setBusinessImpact(await impactRes.json());
     } catch (err) {
       console.error("Error fetching dashboard data", err);
     } finally {
       setLoading(false);
+      setDashLoading(false);
     }
   };
 
@@ -145,6 +159,15 @@ export default function Dashboard() {
 
       {/* Metrics Double-Bezel Cards */}
       <HealthCards stats={stats} />
+
+      {/* Reliability Trend — Watchtower-inspired 30D */}
+      <ReliabilityTrend data={trend} loading={dashLoading} />
+
+      {/* Top Issues + Business Impact */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <TopIssues issues={topIssues} loading={dashLoading} />
+        <BusinessImpact items={businessImpact} loading={dashLoading} />
+      </div>
 
       {/* Ingestion & Interactive Demo Double-Bezel Section */}
       <div className="rounded-[1.75rem] p-1.5 bg-white/[0.03] ring-1 ring-white/10 shadow-[0_12px_40px_rgba(0,0,0,0.5)] relative overflow-hidden">

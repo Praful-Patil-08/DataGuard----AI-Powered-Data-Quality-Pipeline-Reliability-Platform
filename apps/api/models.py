@@ -25,7 +25,7 @@ class Dataset(Base):
     created_at = Column(DateTime, default=lambda: datetime.datetime.now(datetime.timezone.utc))
 
     schemas = relationship("SchemaRecord", back_populates="dataset", cascade="all, delete-orphan")
-    scans = relationship("Scan", back_populates="dataset", cascade="all, delete-orphan")
+    scans = relationship("Scan", foreign_keys="[Scan.dataset_id]", back_populates="dataset", cascade="all, delete-orphan")
 
 
 class SchemaRecord(Base):
@@ -73,14 +73,18 @@ class Scan(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     dataset_id = Column(Integer, ForeignKey("datasets.id"), nullable=False)
+    baseline_dataset_id = Column(Integer, ForeignKey("datasets.id"), nullable=True)
     status = Column(String(50), default="COMPLETED")  # RUNNING, COMPLETED, FAILED
     healthy_count = Column(Integer, default=0)
     warning_count = Column(Integer, default=0)
     critical_count = Column(Integer, default=0)
+    incident_summary = Column(Text, nullable=True)
+    incident_severity = Column(String(20), nullable=True)  # INFO/WARNING/CRITICAL/PASSED
     started_at = Column(DateTime, default=datetime.datetime.utcnow)
     completed_at = Column(DateTime, default=datetime.datetime.utcnow)
 
-    dataset = relationship("Dataset", back_populates="scans")
+    dataset = relationship("Dataset", foreign_keys=[dataset_id], back_populates="scans")
+    baseline_dataset = relationship("Dataset", foreign_keys=[baseline_dataset_id])
     issues = relationship("Issue", back_populates="scan", cascade="all, delete-orphan")
     ai_analyses = relationship("AIAnalysis", back_populates="scan", cascade="all, delete-orphan")
     remediations = relationship("Remediation", back_populates="scan", cascade="all, delete-orphan")
@@ -109,6 +113,8 @@ class AIAnalysis(Base):
     summary = Column(Text, nullable=False)
     root_cause = Column(Text, nullable=False)
     impact = Column(Text, nullable=False)
+    technical_impact = Column(Text, nullable=True)
+    business_impact = Column(Text, nullable=True)
     affected_assets = Column(JSON, default=list)
     recommended_action = Column(Text, nullable=False)
     confidence = Column(Float, default=0.90)

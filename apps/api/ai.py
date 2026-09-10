@@ -14,9 +14,38 @@ class AIAnalysisOutput(BaseModel):
     severity: str
     root_cause: str
     affected_assets: List[str]
+    technical_impact: str
+    business_impact: str
     recommended_action: str
     confidence: float
     requires_human_approval: bool = True
+
+def _business_impact_for(dataset_name: str, issues: List[Dict[str, Any]], affected_assets: List[str]) -> str:
+    cols = {i.get("column_name") for i in issues if i.get("column_name")}
+    # Check for revenue-critical columns
+    if any(c in ("order_value", "order_amount", "revenue_usd") for c in cols) or any("revenue" in a.lower() for a in affected_assets):
+        return "Revenue reporting at risk: Executive Revenue Dashboard, monthly_revenue and customer LTV will be understated or fail. Finance close may be blocked."
+    if any(c == "customer_id" for c in cols):
+        return "Customer segmentation at risk: customer_360_view and cohort retention will mis-join. Marketing attribution and churn models degraded."
+    if any(c == "discount" for c in cols):
+        return "Margin analysis at risk: margin_analysis_model and Promotion ROI Dashboard will miscalculate profitability."
+    if any(c in ("order_date", "created_at") for c in cols):
+        return "Time-series reporting at risk: daily_sales_summary and executive time filters will be incomplete."
+    if affected_assets:
+        return f"Downstream assets affected: {', '.join(affected_assets[:3])}. BI dashboards may show incomplete KPIs."
+    return "No downstream business metric currently at risk."
+
+def _technical_impact_for(issues: List[Dict[str, Any]], affected_assets: List[str]) -> str:
+    types = [i.get("issue_type") for i in issues]
+    if "COLUMN_REMOVED" in types:
+        return f"Schema break: downstream models selecting removed columns will fail or null out. Affected: {', '.join(affected_assets[:3]) if affected_assets else 'unknown'}."
+    if "TYPE_CHANGED" in types:
+        return "Type coercion risk: numeric/date consumers will fail to cast. Ingestion may reject rows or produce NULLs."
+    if "NUMERIC_DRIFT" in types or "CARDINALITY_DRIFT" in types:
+        return "Distribution drift: joins and aggregations will still run but produce silently wrong results (e.g., revenue understated)."
+    if any(t in types for t in ("PRIMARY_KEY_NULL","DUPLICATE_PRIMARY_KEY","HIGH_NULL_RATE")):
+        return "Data quality breach: primary key and null guarantees violated. Deduplication and completeness checks required."
+    return f"Deterministic findings affect {len(affected_assets)} downstream asset(s): {', '.join(affected_assets[:2]) if affected_assets else 'none'}."
 
 def generate_fallback_analysis(
     dataset_name: str,
@@ -33,6 +62,8 @@ def generate_fallback_analysis(
             "severity": "PASSED",
             "root_cause": "Data adheres strictly to baseline schema specifications and quality contracts.",
             "affected_assets": [],
+            "technical_impact": "No technical impact. All downstream models and dashboards will receive expected schema.",
+            "business_impact": "No business impact. KPIs remain trustworthy.",
             "recommended_action": "Safe to ingest into production analytics pipelines.",
             "confidence": 1.0,
             "requires_human_approval": False
@@ -71,12 +102,16 @@ def generate_fallback_analysis(
     summary = f"Detected {len(issues)} issue(s) across '{dataset_name}' with overall severity {overall_sev}."
     root_cause_str = " ".join(root_causes) if root_causes else "Data quality or structural inconsistencies detected during profiling."
     recommended_action_str = " ".join(actions) if actions else "Review scan findings and update data ingestion contracts."
+    technical = _technical_impact_for(issues, affected_assets or ["revenue_model", "Executive Revenue Dashboard"])
+    business = _business_impact_for(dataset_name, issues, affected_assets or ["revenue_model", "Executive Revenue Dashboard"])
 
     return {
         "summary": summary,
         "severity": overall_sev,
         "root_cause": root_cause_str,
         "affected_assets": affected_assets or ["revenue_model", "Executive Revenue Dashboard"],
+        "technical_impact": technical,
+        "business_impact": business,
         "recommended_action": recommended_action_str,
         "confidence": 0.92,
         "requires_human_approval": True
@@ -88,53 +123,13 @@ def run_ai_analyst(
     affected_assets: List[str]
 ) -> Dict[str, Any]:
     """
-    Invokes OpenAI structured outputs if OPENAI_API_KEY is available,
-    otherwise uses the high-precision deterministic fallback engine.
+    Delegates to AIProvider abstraction (Gemini/OpenAI/Mock) — keeps deterministic fallback hermetic.
+    Env: AI_PROVIDER=gemini|openai|mock, OPENAI_API_KEY, GEMINI_API_KEY, OPENAI_MODEL/GEMINI_MODEL
     """
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        return generate_fallback_analysis(dataset_name, issues, affected_assets)
-
     try:
-        from openai import OpenAI
-        client = OpenAI(api_key=api_key)
-
-        prompt = f"""
-You are the DataGuard Lead Analyst Agent.
-Analyze the following dataset scan findings and return a structured JSON response.
-
-Dataset: {dataset_name}
-Deterministic Findings:
-{json.dumps(issues, indent=2)}
-
-Downstream Assets at Risk:
-{json.dumps(affected_assets, indent=2)}
-
-Rules:
-1. Explain what happened clearly for analytics engineers.
-2. Identify the most probable upstream root cause (e.g. column renaming, producer bug, type mismatch).
-3. Detail the business and technical downstream impact.
-4. Recommend a concrete remediation action.
-5. Never claim you changed production data. All remediation requires human approval.
-"""
-
-        response = client.beta.chat.completions.parse(
-            model=OPENAI_MODEL,
-            messages=[
-                {
-                    "role": "system",
-                    "content": "You are DataGuard's AI Data Reliability Analyst. Provide rigorous, structured root cause and impact reasoning."
-                },
-                {"role": "user", "content": prompt}
-            ],
-            response_format=AIAnalysisOutput,
-            temperature=0.1
-        )
-
-        parsed = response.choices[0].message.parsed
-        return parsed.model_dump()
+        from ai_provider import get_provider
+        return get_provider().analyze(dataset_name, issues, affected_assets)
     except Exception as e:
-        # Gracefully fall back to local engine on API failure or network issue
         fallback = generate_fallback_analysis(dataset_name, issues, affected_assets)
-        fallback["summary"] += f" (Note: AI fallback active: {str(e)[:60]})"
+        fallback["summary"] += f" (Provider fallback: {str(e)[:60]})"
         return fallback

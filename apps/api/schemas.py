@@ -76,6 +76,8 @@ class AIAnalysisResponse(BaseModel):
     severity: str
     root_cause: str
     impact: str
+    technical_impact: Optional[str] = None
+    business_impact: Optional[str] = None
     affected_assets: List[str] = []
     recommended_action: str
     confidence: float
@@ -102,16 +104,59 @@ class RemediationResponse(BaseModel):
 class ScanResponse(BaseModel):
     id: int
     dataset_id: int
+    baseline_dataset_id: Optional[int] = None
     status: str
     healthy_count: int
     warning_count: int
     critical_count: int
+    incident_summary: Optional[str] = None
+    incident_severity: Optional[str] = None
     started_at: datetime
     completed_at: datetime
     issues: List[IssueResponse] = []
     ai_analyses: List[AIAnalysisResponse] = []
     remediations: List[RemediationResponse] = []
     model_config = ConfigDict(from_attributes=True)
+
+class GateResponse(BaseModel):
+    passed: bool
+    reasons: List[str] = []
+    allowed_severity: str
+    max_row_count_drop_ratio: float
+    max_null_drift_count: int
+    max_numeric_drift_count: int
+    max_cardinality_drift_count: int
+    incident_severity: str
+
+class DatasetHistoryResponse(BaseModel):
+    dataset_id: int
+    dataset_name: str
+    scans: List[ScanResponse] = []
+
+class ReliabilityTrendPoint(BaseModel):
+    date: str
+    healthy: int
+    warning: int
+    critical: int
+    total: int
+
+class TopIssueResponse(BaseModel):
+    scan_id: int
+    dataset_id: int
+    dataset_name: str
+    filename: str
+    severity: str
+    issue_type: str
+    column_name: Optional[str] = None
+    description: str
+    created_at: datetime
+
+class BusinessImpactResponse(BaseModel):
+    kpi: str
+    status: str  # HEALTHY, AT RISK, CRITICAL
+    affected_datasets: List[str] = []
+    affected_columns: List[str] = []
+    description: str
 
 # --- Lineage & Impact Schemas ---
 class DownstreamAsset(BaseModel):
@@ -123,6 +168,8 @@ class ColumnImpactResponse(BaseModel):
     column_name: str
     dataset_name: str
     affected_assets: List[DownstreamAsset] = []
+    is_demo: bool = True
+    demo_note: str = "Static demo lineage from lineage.py — replace with OpenLineage/dbt in production."
 
 # --- Health Schema ---
 class HealthResponse(BaseModel):

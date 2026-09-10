@@ -50,13 +50,32 @@ def _technical_impact_for(issues: List[Dict[str, Any]], affected_assets: List[st
 def generate_fallback_analysis(
     dataset_name: str,
     issues: List[Dict[str, Any]],
-    affected_assets: List[str]
+    affected_assets: List[str],
+    historical_context: Optional[List[Dict[str, Any]]] = None
 ) -> Dict[str, Any]:
     """
     Deterministic rule-based analyst engine used when OpenAI API key is not configured,
     ensuring 100% testability and offline resilience without external dependencies.
     """
+    # history-aware confidence calibration
+    historical_context = historical_context or []
+    prior_healthy = sum(1 for h in historical_context if h.get("incident_severity") in ("INFO","HEALTHY","PASSED"))
+    recent_critical = sum(1 for h in historical_context if h.get("incident_severity")=="CRITICAL")
+
     if not issues:
+        # if history shows prior critical, still note recovery
+        if recent_critical > 0 and prior_healthy > 0:
+            return {
+                "summary": f"Dataset '{dataset_name}' recovered: 0 issues after {recent_critical} recent critical scans.",
+                "severity": "PASSED",
+                "root_cause": "Data now adheres to baseline after prior drift; likely upstream fix applied.",
+                "affected_assets": [],
+                "technical_impact": "No technical impact. Pipeline can resume.",
+                "business_impact": "Business metrics back to healthy.",
+                "recommended_action": "Resume pipeline and monitor next 2 scans for regression.",
+                "confidence": 0.97,
+                "requires_human_approval": False
+            }
         return {
             "summary": f"Dataset '{dataset_name}' successfully verified. Zero schema drift or quality violations detected.",
             "severity": "PASSED",
@@ -99,11 +118,35 @@ def generate_fallback_analysis(
         root_causes.append(f"Data quality violations detected: {', '.join(q_types)}.")
         actions.append("Quarantine corrupt records and trigger automated alert to source system maintainers.")
 
+    # history-aware enrichment
+    if historical_context:
+        if prior_healthy >= 2 and overall_sev in ("CRITICAL","WARNING"):
+            root_causes.append(f"Historical context: {prior_healthy} prior healthy scans, now {overall_sev} — suggests recent upstream change, not long-standing debt.")
+            actions.append("Check upstream deployment log for last 24h for schema migrations.")
+        if recent_critical >= 2:
+            root_causes.append("Recurring critical incidents — systemic upstream instability, not transient.")
+            actions.append("Escalate to data producer for contract SLAs.")
+
     summary = f"Detected {len(issues)} issue(s) across '{dataset_name}' with overall severity {overall_sev}."
+    if historical_context and prior_healthy:
+        summary += f" (Prior {prior_healthy} healthy scans — new drift.)"
     root_cause_str = " ".join(root_causes) if root_causes else "Data quality or structural inconsistencies detected during profiling."
     recommended_action_str = " ".join(actions) if actions else "Review scan findings and update data ingestion contracts."
     technical = _technical_impact_for(issues, affected_assets or ["revenue_model", "Executive Revenue Dashboard"])
     business = _business_impact_for(dataset_name, issues, affected_assets or ["revenue_model", "Executive Revenue Dashboard"])
+
+    # confidence calibration
+    if overall_sev == "CRITICAL":
+        conf = 0.92 if prior_healthy else 0.88
+        if len(issues) >= 4:
+            conf = 0.94
+    elif overall_sev == "WARNING":
+        conf = 0.85
+    else:
+        conf = 0.97
+    # slightly lower if mixed types
+    if len(set(iss.get("issue_type") for iss in issues)) > 3:
+        conf = max(0.75, conf - 0.04)
 
     return {
         "summary": summary,
@@ -113,23 +156,34 @@ def generate_fallback_analysis(
         "technical_impact": technical,
         "business_impact": business,
         "recommended_action": recommended_action_str,
-        "confidence": 0.92,
-        "requires_human_approval": True
+        "confidence": round(conf, 2),
+        "requires_human_approval": overall_sev in ("CRITICAL","WARNING")
     }
 
 def run_ai_analyst(
     dataset_name: str,
     issues: List[Dict[str, Any]],
-    affected_assets: List[str]
+    affected_assets: List[str],
+    historical_context: Optional[List[Dict[str, Any]]] = None
 ) -> Dict[str, Any]:
     """
     Delegates to AIProvider abstraction (Gemini/OpenAI/Mock) — keeps deterministic fallback hermetic.
     Env: AI_PROVIDER=gemini|openai|mock, OPENAI_API_KEY, GEMINI_API_KEY, OPENAI_MODEL/GEMINI_MODEL
+    historical_context: last N scans with incident_severity for calibration.
     """
     try:
         from ai_provider import get_provider
-        return get_provider().analyze(dataset_name, issues, affected_assets)
+        return get_provider().analyze(dataset_name, issues, affected_assets, historical_context)
+    except TypeError:
+        # provider without history support
+        try:
+            from ai_provider import get_provider
+            return get_provider().analyze(dataset_name, issues, affected_assets)
+        except Exception as e:
+            fallback = generate_fallback_analysis(dataset_name, issues, affected_assets, historical_context)
+            fallback["summary"] += f" (Provider fallback: {str(e)[:60]})"
+            return fallback
     except Exception as e:
-        fallback = generate_fallback_analysis(dataset_name, issues, affected_assets)
+        fallback = generate_fallback_analysis(dataset_name, issues, affected_assets, historical_context)
         fallback["summary"] += f" (Provider fallback: {str(e)[:60]})"
         return fallback

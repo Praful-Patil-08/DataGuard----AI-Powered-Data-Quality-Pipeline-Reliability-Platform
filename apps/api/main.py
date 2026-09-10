@@ -608,8 +608,30 @@ def analyze_scan_with_ai(scan_id: int, db: Session = Depends(get_db)):
                 if item["name"] not in affected_assets:
                     affected_assets.append(item["name"])
 
-    # Run AI Analyst (with deterministic fallback)
-    analysis_dict = run_ai_analyst(scan.dataset.name, issues_data, affected_assets)
+    # Historical context: last 3 scans for logical dataset (prefix) excluding current — enables P3 history-aware AI
+    historical_context = []
+    try:
+        prefix = scan.dataset.name.split("_")[0] if scan.dataset and scan.dataset.name else ""
+        # find dataset ids with same prefix
+        related_ids = [scan.dataset_id]
+        if prefix:
+            related_ds = db.query(models.Dataset).filter(models.Dataset.name.like(f"{prefix}%")).all()
+            related_ids = [d.id for d in related_ds]
+        prior_scans = db.query(models.Scan).filter(models.Scan.dataset_id.in_(related_ids), models.Scan.id != scan.id).order_by(desc(models.Scan.completed_at)).limit(3).all()
+        for ps in prior_scans:
+            historical_context.append({
+                "scan_id": ps.id,
+                "incident_severity": ps.incident_severity,
+                "incident_summary": ps.incident_summary,
+                "critical_count": ps.critical_count,
+                "warning_count": ps.warning_count,
+                "completed_at": ps.completed_at.isoformat() if ps.completed_at else None,
+            })
+    except Exception:
+        historical_context = []
+
+    # Run AI Analyst (with deterministic fallback) — now history-aware
+    analysis_dict = run_ai_analyst(scan.dataset.name, issues_data, affected_assets, historical_context)
 
     ai_record = models.AIAnalysis(
         scan_id=scan.id,

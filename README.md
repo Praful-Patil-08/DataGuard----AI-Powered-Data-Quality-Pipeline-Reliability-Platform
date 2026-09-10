@@ -100,7 +100,7 @@ source .venv/bin/activate
 PYTHONPATH=. pytest tests/ -v
 ```
 
-16 tests (7 core + 9 Watchtower-adapted) execute hermetically without network or API keys.
+17 tests (7 core + 10 Watchtower-adapted incl. lineage/config, history business impact) execute hermetically without network or API keys. Frontend `next build` 6 routes.
 
 ---
 
@@ -113,4 +113,6 @@ PYTHONPATH=. pytest tests/ -v
 5. **AI Analyst** — explains rename hypothesis, technical + business impact separately, recommends mapping. Provider-agnostic (`mock` by default, `gemini`/`openai` if key set).
 6. **Human Approval** → `[Approve]` records `decision_by/at/notes` → visible in `/audit` trail.
 
-**Control Center:** Overview shows *Reliability Trend* (wavy 14d), *Top Active Issues*, *Business Impact* (Revenue/Customer/Margin at risk), Datasets with health/history, and Scan detail ordered WHAT→WHY→AFFECTED→IMPACT→ACTION.
+**Control Center:** Overview shows *Reliability Trend* (wavy 30d), *Top Active Issues* (5), *Business Impact* (Revenue/Customer/Margin at risk), Datasets with health/history/l lineage editor (`PUT /api/lineage/config`), and Scan detail ordered WHAT (gate+incident) → WHAT changed → AFFECTED → IMPACT → ACTION → Audit Timeline. Upload limit 100MB (handles Olist geolocation 58MB); audit at `/audit` supports `?status=&severity=&dataset_id=` filters. Recent Scans now shows **Business Impact** column.
+
+**Real data tested:** Olist 9 CSVs (olist_orders 99k rows, geolocation 1M rows) — all profiled via Watchtower IQR + quality checks; `olist_geolocation_dataset.csv` (58MB) now passes 100MB limit after P5 fix.

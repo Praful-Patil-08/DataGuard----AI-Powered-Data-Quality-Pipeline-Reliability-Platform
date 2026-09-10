@@ -90,8 +90,13 @@ async def upload_dataset(
         raise HTTPException(status_code=400, detail="Only CSV and JSON files are supported.")
 
     content = await file.read()
-    if len(content) > 50 * 1024 * 1024: # 50MB limit
-        raise HTTPException(status_code=400, detail="File exceeds maximum size limit (50MB).")
+    if len(content) > 100 * 1024 * 1024: # 100MB limit — handles Olist geolocation 58MB real data
+        raise HTTPException(status_code=400, detail="File exceeds maximum size limit (100MB).")
+    # Security: basic CSV/JSON header validation
+    if ext == "csv" and content[:3] == b"\xef\xbb\xbf":
+        content = content[3:]  # strip BOM
+    if len(content) == 0:
+        raise HTTPException(status_code=400, detail="Empty file.")
 
     try:
         df = parse_dataset_content(content, filename)
@@ -744,22 +749,45 @@ def get_column_lineage(dataset_name: str, column_name: str):
     )
 
 @app.get("/api/audit")
-def get_audit_trail(limit: int = 20, db: Session = Depends(get_db)):
-    scans = db.query(models.Scan).order_by(desc(models.Scan.completed_at)).limit(limit).all()
+def get_audit_trail(
+    limit: int = 20,
+    dataset_id: Optional[int] = None,
+    status: Optional[str] = None,
+    severity: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    # Governance: filterable audit for human verification
+    q = db.query(models.Scan).order_by(desc(models.Scan.completed_at))
+    if dataset_id:
+        q = q.filter(models.Scan.dataset_id == dataset_id)
+    if severity:
+        q = q.filter(models.Scan.incident_severity == severity.upper())
+    scans = q.limit(limit * 3).all()  # over-fetch for status filter
     trail = []
     for s in scans:
+        if dataset_id and s.dataset_id != dataset_id:
+            continue
         issues = db.query(models.Issue).filter(models.Issue.scan_id == s.id).all()
         ai = db.query(models.AIAnalysis).filter(models.AIAnalysis.scan_id == s.id).order_by(desc(models.AIAnalysis.created_at)).first()
-        rems = db.query(models.Remediation).filter(models.Remediation.scan_id == s.id).all()
+        rems_q = db.query(models.Remediation).filter(models.Remediation.scan_id == s.id)
+        if status:
+            rems_q = rems_q.filter(models.Remediation.status == status.upper())
+        rems = rems_q.all()
         for r in rems:
+            if status and r.status != status.upper():
+                continue
+            if severity and s.incident_severity != severity.upper():
+                continue
             trail.append({
                 "scan_id": s.id,
                 "dataset_id": s.dataset_id,
                 "dataset_name": s.dataset.name if s.dataset else "",
+                "filename": s.dataset.filename if s.dataset else "",
                 "incident_summary": s.incident_summary,
                 "incident_severity": s.incident_severity,
                 "issue_count": len(issues),
                 "ai_summary": ai.summary if ai else None,
+                "business_impact": ai.business_impact if ai and ai.business_impact else None,
                 "remediation_id": r.id,
                 "suggestion": r.suggestion,
                 "status": r.status,
@@ -768,9 +796,8 @@ def get_audit_trail(limit: int = 20, db: Session = Depends(get_db)):
                 "notes": r.notes,
                 "scan_completed_at": s.completed_at.isoformat() if s.completed_at else None,
             })
-    # sort by decision_at or scan time
     trail.sort(key=lambda x: x["decision_at"] or x["scan_completed_at"] or "", reverse=True)
-    return trail
+    return trail[:limit]
 
 # ----------------- 1-Click Interactive Demo Seed -----------------
 @app.post("/api/demo/seed/{sample_name}")

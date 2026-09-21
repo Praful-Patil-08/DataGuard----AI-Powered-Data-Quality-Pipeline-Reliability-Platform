@@ -20,6 +20,7 @@ from ai import run_ai_analyst
 import quality_contracts as qc_manager
 import baselines as baseline_manager
 import incidents as incident_manager
+import reliability as reliability_manager
 import json as _json
 from storage_backend import save_file, load_file, STORAGE_DIR
 
@@ -1435,6 +1436,41 @@ def get_dataset_incidents(dataset_id: int, db: Session = Depends(get_db)):
     if not ds:
         raise HTTPException(status_code=404, detail="Dataset not found")
     return db.query(models.Incident).filter(models.Incident.dataset_id == dataset_id).order_by(desc(models.Incident.created_at)).all()
+
+# ----------------- Historical Reliability (Elementary — Phase 10) -----------------
+@app.get("/api/reliability/overview")
+def get_reliability_overview(db: Session = Depends(get_db)):
+    return reliability_manager.get_reliability_overview(db)
+
+@app.get("/api/reliability/trends")
+def get_reliability_trends_endpoint(dataset_id: Optional[int] = None, days: int = 30, db: Session = Depends(get_db)):
+    if days < 1 or days > 90:
+        raise HTTPException(status_code=400, detail="days must be 1-90")
+    return reliability_manager.get_reliability_trends(db, dataset_id=dataset_id, days=days)
+
+@app.get("/api/reliability/datasets")
+def get_reliability_datasets(limit: int = 5, days: Optional[int] = None, db: Session = Depends(get_db)):
+    if limit < 1 or limit > 20:
+        raise HTTPException(status_code=400, detail="limit must be 1-20")
+    return reliability_manager.get_most_problematic_datasets(db, limit=limit, days=days)
+
+@app.get("/api/reliability/columns")
+def get_reliability_columns(limit: int = 10, days: Optional[int] = None, db: Session = Depends(get_db)):
+    if limit < 1 or limit > 20:
+        raise HTTPException(status_code=400, detail="limit must be 1-20")
+    return reliability_manager.get_most_problematic_columns(db, limit=limit, days=days)
+
+@app.get("/api/reliability/incidents")
+def get_reliability_incidents(days: int = 30, dataset_id: Optional[int] = None, db: Session = Depends(get_db)):
+    if days < 1 or days > 90:
+        raise HTTPException(status_code=400, detail="days must be 1-90")
+    return reliability_manager.get_incident_frequency(db, days=days, dataset_id=dataset_id)
+
+@app.get("/api/reliability/degradation")
+def get_reliability_degradation(dataset_id: Optional[int] = None, window: int = 5, db: Session = Depends(get_db)):
+    if window < 2 or window > 10:
+        raise HTTPException(status_code=400, detail="window must be 2-10")
+    return reliability_manager.detect_quality_degradation(db, dataset_id=dataset_id, window=window)
 
 @app.get("/api/audit")
 def get_audit_trail(

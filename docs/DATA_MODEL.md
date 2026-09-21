@@ -44,14 +44,15 @@
 - `incident_severity`: VARCHAR(20) (INFO/WARNING/CRITICAL/PASSED)
 - `started_at`/`completed_at`: TIMESTAMP
 
-### `issues`
+### `issues` (populated by `quality/` registry + `drift.py`)
 - `id`: UUID / Integer (Primary Key)
 - `scan_id`: FK -> `scans.id`
-- `issue_type`: VARCHAR(100) (COLUMN_REMOVED, COLUMN_ADDED, TYPE_CHANGED, NULLABILITY_CHANGED, NULL_CHECK, DUPLICATE_CHECK, RANGE_CHECK, DATE_VALIDATION, CATEGORICAL_INCONSISTENCY, NUMERIC_ANOMALY)
+- `issue_type`: VARCHAR(100) (COLUMN_REMOVED, COLUMN_ADDED, TYPE_CHANGED, NULLABILITY_CHANGED, NULL_RATE_DRIFT, CARDINALITY_DRIFT, NUMERIC_DRIFT, ROW_COUNT_DRIFT, EMPTY_DATASET, PRIMARY_KEY_NULL, DUPLICATE_PRIMARY_KEY, DUPLICATE_ROWS, HIGH_NULL_RATE, NEGATIVE_VALUE_ANOMALY, NUMERIC_ANOMALY, MALFORMED_DATE, CATEGORICAL_INCONSISTENCY, RULE_EXECUTION_ERROR)
 - `severity`: VARCHAR(20) ('CRITICAL', 'WARNING', 'INFO')
 - `column_name`: VARCHAR(255) (Nullable)
 - `description`: TEXT
-- `metadata`: JSONB
+- `metadata`: JSONB (per-rule evidence: `null_count`, `negative_count`, `invalid_count`, `inconsistent_variants`, etc.)
+- `quality/` mapping: each `QualityRule` emits `RuleResult` → `to_issue_dict()` → `Issue` row; registry order mirrors legacy `quality.py` for stable snapshots; `contracts.py` supplies `primary_key` to `PrimaryKeyRule`.
 
 ### `ai_analysis` (history-aware, provider-agnostic)
 - `id`: UUID / Integer (Primary Key)

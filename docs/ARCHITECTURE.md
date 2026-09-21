@@ -39,12 +39,17 @@
 
 2. **Backend (`apps/api`)**:
    - FastAPI (Python 3.11+).
-   - `scanner.py`: Ingestion, validation, profiling.
-   - `schema.py`: Schema fingerprinting and drift comparison.
-   - `quality.py`: Deterministic data quality rules (nulls, ranges, duplicates, formats).
+   - `scanner.py`: Ingestion, validation, profiling (Pandas + IQR outlier detection).
+   - `drift.py`: Schema & statistical drift (COLUMN_REMOVED/ADDED, TYPE_CHANGED, NULL_RATE/CARDINALITY/NUMERIC/ROW_COUNT drifts + incident summary + gate).
+   - `quality/`: Modular deterministic quality engine — **Phase 1 refactor** (Great Expectations / Soda-inspired):
+     - `quality/rule.py` (`QualityRule` ABC) + `quality/result.py` (`RuleResult`) + `quality/registry.py` (`QualityRuleRegistry`) + `quality/engine.py` (`QualityEngine` + `run_quality_checks()` façade).
+     - `quality/rules/` — 8 isolated rules: `empty_dataset`, `primary_key` (contract-aware composite), `duplicate_rows`, `null_rate`, `negative_value`, `numeric_anomaly` (z-score), `date_validation`, `categorical_consistency`.
+     - Preserves original `from quality import run_quality_checks` signature for zero-breakage; registry is insertion-ordered, each rule is deterministic, explainable, and unit-testable.
+     - Pattern study: Great Expectations Expectations → typed per-check class + Validator; Soda Core declarative checks → registry/scan executor. DataGuard reimplements natively (no external dep).
    - `lineage.py`: Dependency graph mapping (Column -> SQL Model -> Dashboard).
-   - `ai.py`: OpenAI Analyst Agent returning structured Pydantic outputs.
-   - Database layer: SQLAlchemy / asyncpg ORM mapping to PostgreSQL.
+   - `contracts.py` + `dataset_contracts.json`: Table-type & PK contracts (entity/fact/event) eliminating heuristic `endswith _id` false positives.
+   - `ai.py` + `ai_provider.py`: OpenAI/Gemini/Mock analyst with structured `AIAnalysisOutput`.
+   - Database layer: SQLAlchemy 2.0 → PostgreSQL (SQLite fallback for hermetic tests).
 
 3. **Storage (`database/` + `storage_backend.py`)**:
     - PostgreSQL with `run_migrations()` additive `ALTER TABLE` on startup (no Alembic, safe for SQLite/PG): `scans.baseline_dataset_id/incident_*`, `schema_columns.null_rate/.../top_values`, `ai_analysis.technical_impact/business_impact`.

@@ -100,6 +100,33 @@ class RemediationResponse(BaseModel):
     notes: Optional[str] = None
     model_config = ConfigDict(from_attributes=True)
 
+# --- Incident Schemas ---
+class IncidentResponse(BaseModel):
+    id: int
+    scan_id: int
+    dataset_id: int
+    dataset_name: str
+    title: str
+    severity: str
+    status: str
+    root_cause: Optional[str] = None
+    affected_columns: List[str] = Field(default_factory=list)
+    affected_assets: List[str] = Field(default_factory=list)
+    issue_ids: List[int] = Field(default_factory=list)
+    issue_types: List[str] = Field(default_factory=list)
+    issue_count: int
+    correlation_evidence: Dict[str, Any] = Field(default_factory=dict)
+    quality_score_at_incident: Optional[float] = None
+    created_at: datetime
+    updated_at: datetime
+    resolved_at: Optional[datetime] = None
+    resolved_by: Optional[str] = None
+    model_config = ConfigDict(from_attributes=True)
+
+class IncidentStatusUpdate(BaseModel):
+    status: str  # OPEN, INVESTIGATING, RESOLVED, CLOSED
+    resolved_by: Optional[str] = None
+
 # --- Scan Schemas ---
 class ScanResponse(BaseModel):
     id: int
@@ -118,6 +145,7 @@ class ScanResponse(BaseModel):
     issues: List[IssueResponse] = []
     ai_analyses: List[AIAnalysisResponse] = []
     remediations: List[RemediationResponse] = []
+    incidents: List[IncidentResponse] = []
     model_config = ConfigDict(from_attributes=True)
 
 class QualityScoreResponse(BaseModel):
@@ -242,6 +270,7 @@ class BaselineResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     model_config = ConfigDict(from_attributes=True)
+
 
 # --- Health Schema ---
 class HealthResponse(BaseModel):

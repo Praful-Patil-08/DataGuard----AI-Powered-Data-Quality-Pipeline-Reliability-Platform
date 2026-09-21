@@ -91,6 +91,7 @@ class Scan(Base):
     issues = relationship("Issue", back_populates="scan", cascade="all, delete-orphan")
     ai_analyses = relationship("AIAnalysis", back_populates="scan", cascade="all, delete-orphan")
     remediations = relationship("Remediation", back_populates="scan", cascade="all, delete-orphan")
+    incidents = relationship("Incident", back_populates="scan", cascade="all, delete-orphan")
 
 
 class Issue(Base):
@@ -207,3 +208,49 @@ class Baseline(Base):
 
     baseline_dataset = relationship("Dataset", foreign_keys=[baseline_dataset_id])
     baseline_schema = relationship("SchemaRecord", foreign_keys=[baseline_schema_id])
+
+
+class Incident(Base):
+    """
+    Incident — correlated grouping of related issues (deterministic).
+
+    Example: "Customer ingestion pipeline degraded" groups:
+    - customer_id null_rate drift
+    - row_count drop
+    - schema change
+    - downstream orders affected
+
+    Deterministic correlation via evidence: same scan, same dataset,
+    column overlap, issue_type families (schema, drift, quality, contract,
+    statistical), and downstream lineage overlap.
+
+    One incident per scan for MVP (all related issues grouped), with
+    deterministic ID and explainable grouping metadata. Future: multiple
+    incidents per scan if distinct columns/KPIs.
+    """
+    __tablename__ = "incidents"
+
+    id = Column(Integer, primary_key=True, index=True)
+    scan_id = Column(Integer, ForeignKey("scans.id"), nullable=False, index=True)
+    dataset_id = Column(Integer, ForeignKey("datasets.id"), nullable=False, index=True)
+    # Logical dataset name for cross-version grouping
+    dataset_name = Column(String(255), nullable=False, index=True)
+    title = Column(String(255), nullable=False)
+    severity = Column(String(20), nullable=False, index=True)  # INFO/WARNING/CRITICAL
+    status = Column(String(20), default="OPEN", nullable=False, index=True)  # OPEN, INVESTIGATING, RESOLVED, CLOSED
+    root_cause = Column(Text, nullable=True)  # deterministic hypothesis
+    affected_columns = Column(JSON, default=list)  # list of column names
+    affected_assets = Column(JSON, default=list)  # downstream assets from lineage
+    issue_ids = Column(JSON, default=list)  # list of Issue ids in this incident
+    issue_types = Column(JSON, default=list)  # distinct issue_type list
+    issue_count = Column(Integer, default=0)
+    # Evidence for correlation: shared columns, shared families, lineage overlap
+    correlation_evidence = Column(JSON, default=dict)
+    quality_score_at_incident = Column(Float, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.datetime.now(datetime.timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.datetime.now(datetime.timezone.utc), onupdate=lambda: datetime.datetime.now(datetime.timezone.utc))
+    resolved_at = Column(DateTime, nullable=True)
+    resolved_by = Column(String(255), nullable=True)
+
+    scan = relationship("Scan", foreign_keys=[scan_id], back_populates="incidents")
+    dataset = relationship("Dataset", foreign_keys=[dataset_id])

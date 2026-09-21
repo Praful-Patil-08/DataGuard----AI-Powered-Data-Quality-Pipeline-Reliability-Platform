@@ -57,7 +57,6 @@
      - Stored in `quality_contracts` (versioned `version` int + `updated_at`, `enabled` flag, `params` JSON), validated via Pydantic (`threshold 0-1`, `severity` enum), separate from `issues` scan results.
      - Dataset matching uses prefix logic (`orders` matches `orders_v1`/`orders_bad_quality`) mirroring `contracts.py`; evaluation is deterministic pandas with evidence (`expected vs actual`, `null_count`, `invalid_samples`, `version`).
      - API: `POST/GET/PUT/DELETE /api/contracts`, `GET /api/datasets/{id}/contracts`, `POST /api/datasets/{id}/contracts/evaluate`; integrated into `scan_dataset:322` — contracts evaluated against `df_quality` and appended to `all_issues` as `CONTRACT_BREACH_*` (explainable, testable).
-   - `lineage.py`: Dependency graph mapping (Column -> SQL Model -> Dashboard).
    - `quality_score.py` — **Phase 3** (OpenMetadata/Elementary dimensions):
      - 7 dimensions `completeness, uniqueness, validity, consistency, schema_stability, distribution_stability, freshness` weighted `0.20/0.20/0.20/0.10/0.15/0.10/0.05` → weighted sum 0-100, integer, clamped.
      - Penalty deterministic: `CRITICAL -25`, `WARNING -10` per issue in dimension, plus freshness from `max date` recency (`≤7d 100, ≤30d 95, ≤90d 80, >90d 60`).
@@ -68,9 +67,16 @@
      - Explicit, versioned (`version` increments per logical `dataset_name`), never silent; `dataset_name` logical (e.g., `orders` → `orders_v1/v2`), `baseline_dataset_id/schema_id`, `fingerprint/row_count/column_count/quality_score` snapshot, `is_active` (only one active per logical), `created_by/description`, `created_at`.
      - Manager `baselines.py` with `_logical_name` prefix logic, `get_active_baseline`, `create_baseline` (deactivates previous active), `list/activate/compare`; scan uses active baseline when no explicit `baseline_dataset_id` (fallback to prefix search).
      - APIs: `POST/GET /api/baselines`, `GET/PUT/DELETE /api/baselines/{id}`, `PUT .../activate`, `GET /api/datasets/{id}/baselines`, `GET /api/baselines/{id}/compare/{dataset_id}`.
+   - `incidents.py` + `Incident` table — **Phase 7** (Elementary incident layer):
+     - Deterministic correlation: one incident per scan grouping all related issues via evidence (same scan, same dataset, column overlap, issue_type families `schema/drift/statistical/quality/contract`, downstream lineage overlap `orders.order_value → revenue_model`).
+     - Never uses LLM; `FAMILY_MAP` single-assignment, `generate_incident_title`/`generate_root_cause` deterministic hypothesis (schema change, drift, quality breach, contract violation, upstream check hint), `correlation_evidence` with `families/family_counts/overlapping_columns/downstream_assets/issue_count`.
+     - Persisted `incidents` (`scan_id/dataset_id/dataset_name/title/severity/status/root_cause/affected_columns/affected_assets/issue_ids/issue_types/issue_count/correlation_evidence/quality_score_at_incident`), status `OPEN→RESOLVED/CLOSED` via `PUT /api/incidents/{id}`.
+     - APIs: `GET /api/incidents` (filter `dataset_id/name/severity/status`), `GET /api/incidents/{id}`, `PUT ...` (status), `GET /api/scans/{id}/incidents`, `GET /api/datasets/{id}/incidents`; scan auto-creates incident via `correlate_incidents_for_scan`.
+     - Study: Elementary incident grouping + OpenLineage downstream impact → deterministic correlation.
+   - `lineage.py`: Dependency graph mapping (Column -> SQL Model -> Dashboard).
    - `contracts.py` + `dataset_contracts.json`: Table-type & PK contracts (entity/fact/event) eliminating heuristic `endswith _id` false positives.
    - `ai.py` + `ai_provider.py`: OpenAI/Gemini/Mock analyst with structured `AIAnalysisOutput`.
-   - Database layer: SQLAlchemy 2.0 → PostgreSQL (SQLite fallback for hermetic tests); `quality_contracts` + `baselines` + `scans.quality_score/dimensions` via `create_all` + `run_migrations()` additive `ALTER TABLE`.
+   - Database layer: SQLAlchemy 2.0 → PostgreSQL (SQLite fallback for hermetic tests); `quality_contracts` + `baselines` + `incidents` + `scans.quality_score/dimensions` via `create_all` + `run_migrations()` additive `ALTER TABLE`.
 
 3. **Storage (`database/` + `storage_backend.py`)**:
     - PostgreSQL with `run_migrations()` additive `ALTER TABLE` on startup (no Alembic, safe for SQLite/PG): `scans.baseline_dataset_id/incident_*/quality_score/quality_dimensions`, `schema_columns.null_rate/.../top_values`, `ai_analysis.technical_impact/business_impact`.
@@ -86,6 +92,6 @@
 
 6. **Integration & Demo Assets**:
     - Real Olist 9 CSVs (99k orders, 1M geolocation) verified live: `olist_geolocation_dataset.csv` 58MB now passes; `orders_v1 → orders_v2` rename `order_value→order_amount` produces `COLUMN_RENAMED_CANDIDATE`; `amount` distribution shift 100→500 triggers `NUMERIC_PSI_DRIFT` + `CATEGORICAL_PSI_DRIFT`.
-    - `GET /api/datasets/{id}/history` now includes `quality_score`/`quality_dimensions` + `business_impact`, `GET /dashboard/*` 3 endpoints, `GET /scans/{id}/gate`, `GET /scans/{id}/score` (dimensions + summary), `GET /api/datasets/{id}/schema/history` + `.../schema/compare` (now with statistical drifts), `GET /api/baselines` + `.../baselines/{id}/compare/{dataset_id}` for explicit baseline lifecycle, `POST /scans/{id}/analyze` history-aware.
+    - `GET /api/datasets/{id}/history` now includes `quality_score`/`quality_dimensions` + `business_impact`, `GET /dashboard/*` 3 endpoints, `GET /scans/{id}/gate`, `GET /scans/{id}/score` (dimensions + summary), `GET /api/datasets/{id}/schema/history` + `.../schema/compare` (now with statistical drifts), `GET /api/baselines` + `.../baselines/{id}/compare/{dataset_id}` for explicit baselines, `GET /api/incidents` + `.../scans/{id}/incidents` for correlated incidents, `POST /scans/{id}/analyze` history-aware.
     - Contracts: `GET /api/contracts` + `POST /api/datasets/{id}/contracts/evaluate` for Soda-style declarative checks.
-    - Tests: 66 hermetic `pytest` (7 core + 10 Watchtower + 13 contracts + 10 quality_score + 5 schema_evolution + 14 statistical_drift + 7 baselines) + `next build` 6 routes.
+    - Tests: 74 hermetic `pytest` (7 core + 10 Watchtower + 13 contracts + 10 quality_score + 5 schema_evolution + 14 statistical_drift + 7 baselines + 8 incidents) + `next build` 6 routes.

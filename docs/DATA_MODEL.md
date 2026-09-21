@@ -32,10 +32,10 @@
 - `outlier_count`: INTEGER, `outlier_rate`: FLOAT
 - `top_values`: JSONB `[{value,count,rate}]`
 
-### `scans` (with incident + gate + quality score)
+### `scans` (with incident + gate + quality score + incidents)
 - `id`: UUID / Integer (Primary Key)
 - `dataset_id`: FK -> `datasets.id`
-- `baseline_dataset_id`: FK -> `datasets.id` nullable (explicit baseline, replaces fuzzy `like`)
+- `baseline_dataset_id`: FK -> `datasets.id` nullable (explicit baseline via `baselines` table, fallback to prefix `like`; never silent)
 - `status`: VARCHAR(50) ('RUNNING', 'COMPLETED', 'FAILED')
 - `healthy_count`: INTEGER
 - `warning_count`: INTEGER
@@ -45,6 +45,26 @@
 - `quality_score`: FLOAT nullable (0-100 deterministic weighted sum, default 100.0)
 - `quality_dimensions`: JSONB (`{completeness:{score,weight,critical,warning,evidence,issues}, ... freshness}` with weights `0.20/0.20/0.20/0.10/0.15/0.10/0.05`)
 - `started_at`/`completed_at`: TIMESTAMP
+- `incidents`: relationship `Incident` (one per scan, deterministic grouping)
+
+### `incidents` (correlated, deterministic — Phase 7)
+- `id`: UUID / Integer (Primary Key)
+- `scan_id`: FK -> `scans.id` indexed
+- `dataset_id`: FK -> `datasets.id` indexed
+- `dataset_name`: VARCHAR(255) indexed (logical)
+- `title`: VARCHAR(255) (deterministic from `incident_summary` + families)
+- `severity`: VARCHAR(20) indexed (INFO/WARNING/CRITICAL)
+- `status`: VARCHAR(20) indexed (OPEN, INVESTIGATING, RESOLVED, CLOSED)
+- `root_cause`: TEXT (deterministic hypothesis: schema change, drift, quality breach, contract violation, upstream hint)
+- `affected_columns`: JSONB (union of issue `column_name`)
+- `affected_assets`: JSONB (downstream via `lineage.py` for affected columns)
+- `issue_ids`: JSONB (list of `Issue` ids in incident)
+- `issue_types`: JSONB (distinct `issue_type` list)
+- `issue_count`: INTEGER
+- `correlation_evidence`: JSONB (`{families, family_counts, overlapping_columns, downstream_assets, issue_count, scan_incident_summary, scan_quality_score}`)
+- `quality_score_at_incident`: FLOAT
+- `created_at`/`updated_at`: TIMESTAMP, `resolved_at`/`resolved_by`: nullable
+- `incidents.py`: `FAMILY_MAP` (schema/drift/statistical/quality/contract → family), `correlate_incidents_for_scan` (one per scan, deterministic), never LLM
 
 ### `issues` (populated by `quality/` registry + `drift.py` + `statistical_drift.py` + `quality_contracts.py`)
 - `id`: UUID / Integer (Primary Key)

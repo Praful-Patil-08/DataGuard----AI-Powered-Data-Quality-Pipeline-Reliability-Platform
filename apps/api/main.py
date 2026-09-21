@@ -17,6 +17,7 @@ from lineage import get_downstream_impact, DEFAULT_LINEAGE_MAP, get_lineage_conf
 from ai import run_ai_analyst
 import quality_contracts as qc_manager
 import baselines as baseline_manager
+import incidents as incident_manager
 import json as _json
 from storage_backend import save_file, load_file, STORAGE_DIR
 
@@ -630,6 +631,14 @@ def scan_dataset(
     db.commit()
     db.refresh(scan)
 
+    # Phase 7: Incident correlation — deterministic grouping of related issues
+    try:
+        persisted_issues = db.query(models.Issue).filter(models.Issue.scan_id == scan.id).all()
+        incident_manager.correlate_incidents_for_scan(db, scan, persisted_issues)
+        db.refresh(scan)
+    except Exception:
+        pass  # incident creation must not break scan
+
     return scan
 
 @app.get("/api/scans", response_model=List[schemas.ScanResponse])
@@ -1240,6 +1249,60 @@ def compare_baseline_to_dataset(baseline_id: int, dataset_id: int, db: Session =
         raise HTTPException(status_code=404, detail="Dataset not found")
     # Use baseline's dataset and schema
     return baseline_manager.get_baseline_comparison(db, b, dataset_id)
+
+# ----------------- Incidents (deterministic correlation) -----------------
+@app.get("/api/incidents", response_model=List[schemas.IncidentResponse])
+def list_incidents(
+    dataset_id: Optional[int] = None,
+    dataset_name: Optional[str] = None,
+    severity: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = 50,
+    db: Session = Depends(get_db)
+):
+    return incident_manager.list_incidents(db, dataset_id=dataset_id, dataset_name=dataset_name, severity=severity, status=status, limit=limit)
+
+@app.get("/api/incidents/{incident_id}", response_model=schemas.IncidentResponse)
+def get_incident(incident_id: int, db: Session = Depends(get_db)):
+    inc = db.query(models.Incident).filter(models.Incident.id == incident_id).first()
+    if not inc:
+        raise HTTPException(status_code=404, detail="Incident not found")
+    return inc
+
+@app.put("/api/incidents/{incident_id}", response_model=schemas.IncidentResponse)
+def update_incident(incident_id: int, payload: schemas.IncidentStatusUpdate, db: Session = Depends(get_db)):
+    inc = db.query(models.Incident).filter(models.Incident.id == incident_id).first()
+    if not inc:
+        raise HTTPException(status_code=404, detail="Incident not found")
+    if payload.status.upper() not in {"OPEN", "INVESTIGATING", "RESOLVED", "CLOSED"}:
+        raise HTTPException(status_code=400, detail="Invalid status. Use OPEN, INVESTIGATING, RESOLVED, CLOSED")
+    inc.status = payload.status.upper()
+    if payload.status.upper() in ("RESOLVED", "CLOSED"):
+        import datetime
+        inc.resolved_at = datetime.datetime.now(datetime.timezone.utc)
+        inc.resolved_by = payload.resolved_by or "system"
+    else:
+        inc.resolved_at = None
+        inc.resolved_by = None
+    import datetime
+    inc.updated_at = datetime.datetime.now(datetime.timezone.utc)
+    db.commit()
+    db.refresh(inc)
+    return inc
+
+@app.get("/api/scans/{scan_id}/incidents", response_model=List[schemas.IncidentResponse])
+def get_scan_incidents(scan_id: int, db: Session = Depends(get_db)):
+    scan = db.query(models.Scan).filter(models.Scan.id == scan_id).first()
+    if not scan:
+        raise HTTPException(status_code=404, detail="Scan not found")
+    return db.query(models.Incident).filter(models.Incident.scan_id == scan_id).order_by(desc(models.Incident.created_at)).all()
+
+@app.get("/api/datasets/{dataset_id}/incidents", response_model=List[schemas.IncidentResponse])
+def get_dataset_incidents(dataset_id: int, db: Session = Depends(get_db)):
+    ds = db.query(models.Dataset).filter(models.Dataset.id == dataset_id).first()
+    if not ds:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    return db.query(models.Incident).filter(models.Incident.dataset_id == dataset_id).order_by(desc(models.Incident.created_at)).all()
 
 @app.get("/api/audit")
 def get_audit_trail(

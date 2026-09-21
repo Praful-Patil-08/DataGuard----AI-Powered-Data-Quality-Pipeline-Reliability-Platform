@@ -21,6 +21,7 @@ import quality_contracts as qc_manager
 import baselines as baseline_manager
 import incidents as incident_manager
 import reliability as reliability_manager
+import anomaly as anomaly_manager
 import json as _json
 from storage_backend import save_file, load_file, STORAGE_DIR
 
@@ -1471,6 +1472,47 @@ def get_reliability_degradation(dataset_id: Optional[int] = None, window: int = 
     if window < 2 or window > 10:
         raise HTTPException(status_code=400, detail="window must be 2-10")
     return reliability_manager.detect_quality_degradation(db, dataset_id=dataset_id, window=window)
+
+# ----------------- Anomaly Detection (statistical, not ML — Phase 11) -----------------
+@app.get("/api/anomalies")
+def list_anomalies(dataset_name: Optional[str] = None, window: int = 10, db: Session = Depends(get_db)):
+    if window < 3 or window > 20:
+        raise HTTPException(status_code=400, detail="window must be 3-20")
+    if dataset_name:
+        return anomaly_manager.detect_anomalies_for_dataset(db, dataset_name, window=window)
+    # All datasets: iterate distinct logical names
+    # Get distinct logical prefixes
+    all_ds = db.query(models.Dataset).all()
+    seen = set()
+    result = []
+    for ds in all_ds:
+        logical = ds.name.split("_")[0] if ds.name else ds.name
+        if logical in seen:
+            continue
+        seen.add(logical)
+        res = anomaly_manager.detect_anomalies_for_dataset(db, logical, window=window)
+        if res["anomalies"]:
+            result.append(res)
+    return {"datasets": result, "window": window}
+
+@app.get("/api/datasets/{dataset_id}/anomalies")
+def get_dataset_anomalies(dataset_id: int, window: int = 10, db: Session = Depends(get_db)):
+    ds = db.query(models.Dataset).filter(models.Dataset.id == dataset_id).first()
+    if not ds:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    if window < 3 or window > 20:
+        raise HTTPException(status_code=400, detail="window must be 3-20")
+    return anomaly_manager.detect_anomalies_for_dataset(db, ds.name, window=window)
+
+@app.get("/api/scans/{scan_id}/anomalies")
+def get_scan_anomalies(scan_id: int, window: int = 10, db: Session = Depends(get_db)):
+    scan = db.query(models.Scan).filter(models.Scan.id == scan_id).first()
+    if not scan:
+        raise HTTPException(status_code=404, detail="Scan not found")
+    if window < 3 or window > 20:
+        raise HTTPException(status_code=400, detail="window must be 3-20")
+    anomalies = anomaly_manager.detect_anomalies_for_scan(db, scan_id, window=window)
+    return {"scan_id": scan_id, "dataset": scan.dataset.name if scan.dataset else "unknown", "anomalies": anomalies, "anomaly_count": len(anomalies), "window": window}
 
 @app.get("/api/audit")
 def get_audit_trail(

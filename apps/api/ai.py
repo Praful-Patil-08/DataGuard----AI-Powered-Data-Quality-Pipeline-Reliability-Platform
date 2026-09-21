@@ -1,10 +1,14 @@
 import os
 import json
+import re
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# Prompt injection guard: block control sequences
+_PROMPT_INJECTION_RE = re.compile(r"(SYSTEM:|IGNORE PREVIOUS|PROMPT INJECTION|```)", re.IGNORECASE)
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
@@ -160,6 +164,96 @@ def generate_fallback_analysis(
         "requires_human_approval": overall_sev in ("CRITICAL","WARNING")
     }
 
+def _sanitize_prompt(text: str) -> str:
+    """Prompt injection guard: strip control markers."""
+    if not text:
+        return ""
+    if _PROMPT_INJECTION_RE.search(text):
+        # Remove markers
+        text = _PROMPT_INJECTION_RE.sub("", text)
+    return text[:2000]
+
+def generate_fallback_from_context(context: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Context-aware fallback: uses full deterministic facts (no raw data) to generate analysis.
+    More grounded than generate_fallback_analysis because it has schema_diff, drift_stats, quality_score, impact etc.
+    """
+    dataset_name = context.get("dataset", {}).get("dataset_name", "dataset") if context.get("dataset") else context.get("scan", {}).get("dataset_name", "dataset")
+    issues = context.get("issues", [])
+    downstream = context.get("downstream_assets", [])
+    historical = context.get("historical", [])
+    # Use existing fallback but enrich with context
+    base = generate_fallback_analysis(dataset_name, issues, downstream, historical)
+    # Enrich with schema_diff and impact if available
+    schema_diff = context.get("schema_diff")
+    if schema_diff and schema_diff.get("rename_candidates"):
+        base["root_cause"] += f" Schema evolution: {len(schema_diff['rename_candidates'])} rename candidate(s)."
+    drift_stats = context.get("drift_stats", {})
+    if drift_stats:
+        base["root_cause"] += f" Drift stats: {drift_stats}."
+    quality = context.get("quality_score", {})
+    if quality and quality.get("score") is not None:
+        base["technical_impact"] += f" Quality score {quality['score']}/100."
+    impact = context.get("impact")
+    if impact and impact.get("summary"):
+        base["business_impact"] += f" Impact: {impact['summary']}"
+    # Ensure grounded: affected_assets must be subset of downstream
+    if downstream:
+        # Filter to downstream to avoid hallucination
+        base["affected_assets"] = [a for a in base["affected_assets"] if a in downstream] or downstream[:3]
+    return base
+
+def run_ai_analyst_with_context(context: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Hardened analyst with full context (scan, issues, schema_diff, drift, quality, historical, lineage, impact).
+    Validates output is grounded and structured, never modifies data.
+    """
+    # Sanitize context dataset name for prompt injection
+    dataset_name = context.get("dataset", {}).get("dataset_name", "dataset") if context.get("dataset") else "dataset"
+    dataset_name = _sanitize_prompt(dataset_name)
+    issues = context.get("issues", [])
+    # Sanitize issues descriptions
+    for iss in issues:
+        if "description" in iss:
+            iss["description"] = _sanitize_prompt(iss["description"])
+    downstream = context.get("downstream_assets", [])
+    historical = context.get("historical", [])
+    try:
+        from ai_provider import get_provider
+        # Try context-aware provider method first
+        provider = get_provider()
+        if hasattr(provider, "analyze_with_context"):
+            result = provider.analyze_with_context(context)
+        else:
+            # Fallback to legacy analyze with enriched context
+            result = provider.analyze(dataset_name, issues, downstream, historical)
+        # Validate groundedness
+        try:
+            from ai_context import validate_ai_output
+            result = validate_ai_output(result, context)
+        except Exception:
+            pass
+        return result
+    except TypeError:
+        try:
+            from ai_provider import get_provider
+            provider = get_provider()
+            result = provider.analyze(dataset_name, issues, downstream)
+            try:
+                from ai_context import validate_ai_output
+                result = validate_ai_output(result, context)
+            except Exception:
+                pass
+            return result
+        except Exception as e:
+            fallback = generate_fallback_from_context(context)
+            fallback["summary"] += f" (Provider fallback: {str(e)[:60]})"
+            return fallback
+    except Exception as e:
+        fallback = generate_fallback_from_context(context)
+        fallback["summary"] += f" (Provider fallback: {str(e)[:60]})"
+        return fallback
+
 def run_ai_analyst(
     dataset_name: str,
     issues: List[Dict[str, Any]],
@@ -171,9 +265,18 @@ def run_ai_analyst(
     Env: AI_PROVIDER=gemini|openai|mock, OPENAI_API_KEY, GEMINI_API_KEY, OPENAI_MODEL/GEMINI_MODEL
     historical_context: last N scans with incident_severity for calibration.
     """
+    # Sanitize inputs
+    dataset_name = _sanitize_prompt(dataset_name)
+    for iss in issues:
+        if "description" in iss:
+            iss["description"] = _sanitize_prompt(iss["description"])
     try:
         from ai_provider import get_provider
-        return get_provider().analyze(dataset_name, issues, affected_assets, historical_context)
+        result = get_provider().analyze(dataset_name, issues, affected_assets, historical_context)
+        # Basic validation even for legacy path
+        if "requires_human_approval" not in result and result.get("severity") in ("CRITICAL", "WARNING"):
+            result["requires_human_approval"] = True
+        return result
     except TypeError:
         # provider without history support
         try:

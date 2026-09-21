@@ -17,10 +17,50 @@ class MockProvider(AIProvider):
         from ai import generate_fallback_analysis
         return generate_fallback_analysis(dataset_name, issues, affected_assets, historical_context)
 
+    def analyze_with_context(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        from ai import generate_fallback_from_context
+        return generate_fallback_from_context(context)
+
 class OpenAIProvider(AIProvider):
     def __init__(self, api_key: str = None, model: str = None):
         self.api_key = api_key or os.getenv("OPENAI_API_KEY")
         self.model = model or os.getenv("OPENAI_MODEL", "gpt-4o")
+
+    def analyze_with_context(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        # Delegate to Mock for context-aware deterministic fallback if no key, else use context prompt
+        if not self.api_key:
+            return MockProvider().analyze_with_context(context)
+        try:
+            from openai import OpenAI
+            from ai import AIAnalysisOutput
+            import json
+            client = OpenAI(api_key=self.api_key)
+            # Build prompt from context (facts only, no raw data)
+            prompt = f"""You are DataGuard Lead Analyst. Use ONLY the facts in Context. Return JSON with summary, severity, root_cause, technical_impact, business_impact, affected_assets, recommended_action, confidence.
+Context: {json.dumps(context, indent=2)}
+Rules: Ground every statement in Context issues/schema_diff/drift/quality_score/lineage. Never claim you modified data. Never hallucinate assets not in downstream_assets. If evidence insufficient, say so. Require human approval for CRITICAL/WARNING."""
+            response = client.beta.chat.completions.parse(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": "You are DataGuard AI Data Reliability Analyst. Provide rigorous structured reasoning with technical_impact and business_impact, grounded in Context."},
+                    {"role": "user", "content": prompt}
+                ],
+                response_format=AIAnalysisOutput,
+                temperature=0.1
+            )
+            result = response.choices[0].message.parsed.model_dump()
+            # Validate
+            try:
+                from ai_context import validate_ai_output
+                result = validate_ai_output(result, context)
+            except Exception:
+                pass
+            return result
+        except Exception as e:
+            fallback = MockProvider().analyze_with_context(context)
+            fallback["summary"] += f" (OpenAI fallback: {str(e)[:60]})"
+            return fallback
+
     def analyze(self, dataset_name: str, issues: List[Dict[str, Any]], affected_assets: List[str], historical_context=None) -> Dict[str, Any]:
         if not self.api_key:
             return MockProvider().analyze(dataset_name, issues, affected_assets, historical_context)
@@ -55,6 +95,36 @@ class GeminiProvider(AIProvider):
     def __init__(self, api_key: str = None, model: str = None):
         self.api_key = api_key or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
         self.model = model or os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+
+    def analyze_with_context(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        if not self.api_key:
+            return MockProvider().analyze_with_context(context)
+        try:
+            import google.generativeai as genai
+            import json
+            genai.configure(api_key=self.api_key)
+            model = genai.GenerativeModel(self.model)
+            prompt = f"""Context (facts only, no raw data): {json.dumps(context)}
+Return JSON with keys: summary, severity, root_cause, technical_impact, business_impact, affected_assets, recommended_action, confidence, requires_human_approval. Ground in Context. Never hallucinate."""
+            resp = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
+            text = resp.text
+            data = json.loads(text)
+            data.setdefault("technical_impact", data.get("impact", ""))
+            data.setdefault("business_impact", "Business impact derived from affected assets.")
+            data.setdefault("affected_assets", context.get("downstream_assets", []))
+            data.setdefault("confidence", 0.85)
+            data.setdefault("requires_human_approval", True)
+            try:
+                from ai_context import validate_ai_output
+                data = validate_ai_output(data, context)
+            except Exception:
+                pass
+            return data
+        except Exception as e:
+            fallback = MockProvider().analyze_with_context(context)
+            fallback["summary"] += f" (Gemini fallback: {str(e)[:60]})"
+            return fallback
+
     def analyze(self, dataset_name: str, issues: List[Dict[str, Any]], affected_assets: List[str], historical_context=None) -> Dict[str, Any]:
         if not self.api_key:
             return MockProvider().analyze(dataset_name, issues, affected_assets, historical_context)

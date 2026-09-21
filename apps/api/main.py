@@ -16,7 +16,8 @@ from quality_score import compute_quality_score
 from lineage import get_downstream_impact, DEFAULT_LINEAGE_MAP, get_lineage_config, is_demo_lineage, CONFIG_PATH
 import lineage_graph
 import impact as impact_manager
-from ai import run_ai_analyst
+from ai import run_ai_analyst, run_ai_analyst_with_context
+from ai_context import build_ai_context
 import quality_contracts as qc_manager
 import baselines as baseline_manager
 import incidents as incident_manager
@@ -931,8 +932,17 @@ def analyze_scan_with_ai(scan_id: int, db: Session = Depends(get_db)):
     except Exception:
         historical_context = []
 
-    # Run AI Analyst (with deterministic fallback) — now history-aware
-    analysis_dict = run_ai_analyst(scan.dataset.name, issues_data, affected_assets, historical_context)
+    # Run AI Analyst — hardened path with full deterministic context (Phase 12)
+    # Build context with all facts (no raw data) and use grounded, validated provider
+    try:
+        context = build_ai_context(db, scan.id, max_issues=20, max_history=3)
+        # Ensure downstream_assets in context matches affected_assets for backward compat
+        if affected_assets:
+            context["downstream_assets"] = affected_assets[:10]
+        analysis_dict = run_ai_analyst_with_context(context)
+    except Exception:
+        # Fallback to legacy analyst
+        analysis_dict = run_ai_analyst(scan.dataset.name, issues_data, affected_assets, historical_context)
 
     ai_record = models.AIAnalysis(
         scan_id=scan.id,

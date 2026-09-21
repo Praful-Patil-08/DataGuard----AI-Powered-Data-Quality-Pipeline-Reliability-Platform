@@ -1,6 +1,11 @@
 from typing import List, Dict, Any, Optional
 import difflib
 
+try:
+    import pandas as pd
+except Exception:
+    pd = None  # type: ignore
+
 SEVERITY_ORDER = {"INFO": 0, "WARNING": 1, "CRITICAL": 2, "PASSED": 0, "info": 0, "warning": 1, "critical": 2}
 
 def _ratio_delta(baseline: float, candidate: float) -> float:
@@ -137,6 +142,8 @@ def detect_schema_drift(
     current_columns: List[Dict[str, Any]],
     baseline_row_count: Optional[int] = None,
     current_row_count: Optional[int] = None,
+    baseline_df: Optional[Any] = None,
+    current_df: Optional[Any] = None,
 ) -> List[Dict[str, Any]]:
     """
     Compares baseline schema columns against current schema columns deterministically.
@@ -328,6 +335,32 @@ def detect_schema_drift(
                     "row_count_delta_ratio": row_delta_ratio,
                 }
             })
+
+    # --- Statistical drift (PSI/KS/JSD) — requires raw DataFrames ---
+    # Choose method per data type and sample size (avoids false precision)
+    if baseline_df is not None and current_df is not None and pd is not None:
+        try:
+            from statistical_drift import detect_statistical_drift_for_column
+            common_cols = baseline_map.keys() & current_map.keys()
+            for col_name in common_cols:
+                base_col = baseline_map[col_name]
+                # Need series from dfs
+                if col_name not in baseline_df.columns or col_name not in current_df.columns:
+                    continue
+                # Only for columns where both series have sufficient data; helper checks sample size
+                try:
+                    dtype = base_col.get("data_type", "STRING")
+                    stat_issues = detect_statistical_drift_for_column(
+                        col_name,
+                        baseline_df[col_name],
+                        current_df[col_name],
+                        dtype,
+                    )
+                    issues.extend(stat_issues)
+                except Exception:
+                    continue
+        except Exception:
+            pass  # statistical drift must not break scan
 
     return issues
 

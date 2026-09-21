@@ -40,11 +40,13 @@
 2. **Backend (`apps/api`)**:
    - FastAPI (Python 3.11+).
    - `scanner.py`: Ingestion, validation, profiling (Pandas + IQR outlier detection).
-   - `drift.py`: Schema evolution & statistical drift — **Phase 4** (Watchtower + rename):
+   - `drift.py` + `statistical_drift.py`: Schema evolution & statistical drift — **Phase 4-5** (Watchtower + rename + PSI/KS/JSD):
      - Detects `COLUMN_REMOVED`/`COLUMN_ADDED`/`TYPE_CHANGED`/`NULLABILITY_CHANGED` + Watchtower `NULL_RATE/CARDINALITY/NUMERIC/ROW_COUNT` drifts, row-count gate.
      - Rename detection: evidence-based `COLUMN_RENAMED_CANDIDATE` (never auto-claims) with confidence `0.5*name_sim +0.3*type_compat +0.2*stat_sim` via `difflib.SequenceMatcher + token overlap` + type compatibility + null_rate/unique_ratio delta; thresholds `possible ≥0.60`, `likely ≥0.75`, `very likely ≥0.85`, emitted as `INFO` with `from_column/to_column/confidence/evidence` (name_sim, type_compat, stat_sim), greedy one-to-one.
-     - Historical schema versions: per-physical `Schemas` + logical evolution across `orders%` prefix; endpoints `GET /api/datasets/{id}/schemas`, `GET /api/datasets/{id}/schema/history` (physical + logical), `GET /api/datasets/{id}/schema/compare?baseline_dataset_id=` (drift + rename candidates).
-     - Incident summary + gate unchanged; scoring treats `COLUMN_RENAMED_CANDIDATE` as INFO (no penalty).
+     - Statistical drift: `statistical_drift.py` with PSI (categorical via category frequencies, numeric via 10 quantile bins), KS (numeric ECDF max diff), JSD (categorical distribution) — deterministic numpy/pandas, sample-size guarded (≥30 rows, ≥5 uniques), thresholds PSI `0.1 warning/0.25 critical`, KS `0.2/0.4`, JSD `0.1/0.2`, each finding contains `metric, baseline/current, threshold, severity, evidence, affected column`.
+     - Chooses method per type: numeric → PSI+KS (≥30 rows), categorical → PSI+JSD (≤50 cats), avoids false precision on small samples; integrated via `detect_schema_drift(..., baseline_df, current_df)` when raw DataFrames available (scan preloads via storage, compare endpoint loads both).
+     - Historical schema versions: per-physical `Schemas` + logical evolution across `orders%` prefix; endpoints `GET /api/datasets/{id}/schemas`, `GET /api/datasets/{id}/schema/history` (physical + logical), `GET /api/datasets/{id}/schema/compare?baseline_dataset_id=` (drift + rename + statistical).
+     - Incident summary + gate unchanged; scoring maps `NUMERIC_PSI/KS`, `CATEGORICAL_PSI/JSD` → `distribution_stability` (INFO/WARNING/CRITICAL).
    - `quality/`: Modular deterministic quality engine — **Phase 1** (Great Expectations / Soda-inspired):
      - `quality/rule.py` (`QualityRule` ABC) + `quality/result.py` (`RuleResult`) + `quality/registry.py` (`QualityRuleRegistry`) + `quality/engine.py` (`QualityEngine` + `run_quality_checks()` façade).
      - `quality/rules/` — 8 isolated rules: `empty_dataset`, `primary_key` (contract-aware composite), `duplicate_rows`, `null_rate`, `negative_value`, `numeric_anomaly` (z-score), `date_validation`, `categorical_consistency`.
@@ -79,7 +81,7 @@
     - Scans: `scans/[id]` ordered WHAT (incident+gate `PASS/FAIL`) → WHAT changed → AFFECTED (ImpactGraph `is_demo:true`) → WHY/IMPACT/ACTION (AI) → Audit Timeline → Approve/Reject → `/audit?status=&severity=&dataset_id=` filters.
 
 6. **Integration & Demo Assets**:
-    - Real Olist 9 CSVs (99k orders, 1M geolocation) verified live: `olist_geolocation_dataset.csv` 58MB now passes; `orders_v1 → orders_v2` rename `order_value→order_amount` produces `COLUMN_RENAMED_CANDIDATE` with confidence.
-    - `GET /api/datasets/{id}/history` now includes `quality_score`/`quality_dimensions` + `business_impact`, `GET /dashboard/*` 3 endpoints, `GET /scans/{id}/gate`, `GET /scans/{id}/score` (dimensions + summary), `GET /api/datasets/{id}/schema/history` + `.../schema/compare`, `POST /scans/{id}/analyze` history-aware.
+    - Real Olist 9 CSVs (99k orders, 1M geolocation) verified live: `olist_geolocation_dataset.csv` 58MB now passes; `orders_v1 → orders_v2` rename `order_value→order_amount` produces `COLUMN_RENAMED_CANDIDATE`; `amount` distribution shift 100→500 triggers `NUMERIC_PSI_DRIFT` + `CATEGORICAL_PSI_DRIFT`.
+    - `GET /api/datasets/{id}/history` now includes `quality_score`/`quality_dimensions` + `business_impact`, `GET /dashboard/*` 3 endpoints, `GET /scans/{id}/gate`, `GET /scans/{id}/score` (dimensions + summary), `GET /api/datasets/{id}/schema/history` + `.../schema/compare` (now with statistical drifts), `POST /scans/{id}/analyze` history-aware.
     - Contracts: `GET /api/contracts` + `POST /api/datasets/{id}/contracts/evaluate` for Soda-style declarative checks.
-    - Tests: 45 hermetic `pytest` (7 core + 10 Watchtower + 13 contracts + 10 quality_score + 5 schema_evolution) + `next build` 6 routes.
+    - Tests: 59 hermetic `pytest` (7 core + 10 Watchtower + 13 contracts + 10 quality_score + 5 schema_evolution + 14 statistical_drift) + `next build` 6 routes.

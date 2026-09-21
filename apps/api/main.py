@@ -1,6 +1,6 @@
 import os
 import datetime
-from typing import List, Optional
+from typing import List, Optional, Any
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form, status
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
@@ -278,9 +278,40 @@ def compare_schemas(dataset_id: int, baseline_dataset_id: int, db: Session = Dep
         "p05": c.p05, "p95": c.p95, "outlier_count": c.outlier_count or 0, "outlier_rate": c.outlier_rate if c.outlier_rate is not None else 0.0,
         "top_values": c.top_values or [],
     } for c in base_schema.columns]
-    drift_issues = detect_schema_drift(base_cols, curr_cols, baseline_row_count=base_ds.row_count, current_row_count=ds.row_count)
-    # Split rename candidates
+    # Try to load DataFrames for statistical drift (PSI/KS/JSD)
+    df_baseline = None
+    df_current = None
+    def _load_df(ds):
+        try:
+            exact_path = os.path.join(STORAGE_DIR, f"{ds.id}_{ds.filename}")
+            stored_path = exact_path if os.path.exists(exact_path) else None
+            if not stored_path:
+                for fname in os.listdir(STORAGE_DIR):
+                    if fname.startswith(f"{ds.id}_"):
+                        stored_path = os.path.join(STORAGE_DIR, fname)
+                        break
+            if not stored_path and ds.name in ("orders_v1","orders_v2_schema_drift","orders_bad_quality","customers_v1","products_v1"):
+                for p in [os.path.abspath(os.path.join(STORAGE_DIR, "../../sample-data", f"{ds.name}.csv")),
+                          os.path.abspath(os.path.join(os.path.dirname(__file__), "../../sample-data", f"{ds.name}.csv"))]:
+                    if os.path.exists(p):
+                        stored_path = p
+                        break
+            if stored_path and os.path.exists(stored_path):
+                with open(stored_path, "rb") as fh:
+                    content = fh.read()
+                return parse_dataset_content(content, ds.filename or stored_path)
+        except Exception:
+            pass
+        return None
+    try:
+        df_baseline = _load_df(base_ds)
+        df_current = _load_df(ds)
+    except Exception:
+        pass
+    drift_issues = detect_schema_drift(base_cols, curr_cols, baseline_row_count=base_ds.row_count, current_row_count=ds.row_count, baseline_df=df_baseline, current_df=df_current)
+    # Split rename candidates and statistical drifts
     rename_candidates = [i for i in drift_issues if i["issue_type"] == "COLUMN_RENAMED_CANDIDATE"]
+    statistical = [i for i in drift_issues if i["issue_type"] in ("NUMERIC_PSI_DRIFT","NUMERIC_KS_DRIFT","CATEGORICAL_PSI_DRIFT","CATEGORICAL_JSD_DRIFT")]
     return {
         "baseline_dataset_id": baseline_dataset_id,
         "baseline_dataset_name": base_ds.name,
@@ -288,7 +319,8 @@ def compare_schemas(dataset_id: int, baseline_dataset_id: int, db: Session = Dep
         "candidate_dataset_name": ds.name,
         "drift_issues": drift_issues,
         "rename_candidates": rename_candidates,
-        "summary": f"{len(drift_issues)} drift issues, {len(rename_candidates)} rename candidates"
+        "statistical_drifts": statistical,
+        "summary": f"{len(drift_issues)} drift issues, {len(rename_candidates)} rename candidates, {len(statistical)} statistical drifts"
     }
 
 # ----------------- Scanning & Deterministic Engines -----------------
@@ -349,9 +381,50 @@ def scan_dataset(
             ).order_by(desc(models.SchemaRecord.created_at)).first()
             baseline_dataset = earlier_ds
 
+    # Preload DataFrames for statistical drift (PSI/KS/JSD) — requires raw data
+    df_current = None
+    df_baseline = None
+    def _load_df_for_dataset(ds) -> Optional[Any]:
+        if not ds:
+            return None
+        try:
+            exact_path = os.path.join(STORAGE_DIR, f"{ds.id}_{ds.filename}")
+            stored_path = exact_path if os.path.exists(exact_path) else None
+            if not stored_path:
+                for fname in os.listdir(STORAGE_DIR):
+                    if fname.startswith(f"{ds.id}_"):
+                        if fname == f"{ds.id}_{ds.filename}":
+                            stored_path = os.path.join(STORAGE_DIR, fname)
+                            break
+                if not stored_path:
+                    for fname in os.listdir(STORAGE_DIR):
+                        if fname.startswith(f"{ds.id}_"):
+                            stored_path = os.path.join(STORAGE_DIR, fname)
+                            break
+            if not stored_path and ds.name in ("orders_v1","orders_v2_schema_drift","orders_bad_quality","customers_v1","products_v1"):
+                for p in [os.path.abspath(os.path.join(STORAGE_DIR, "../../sample-data", f"{ds.name}.csv")),
+                          os.path.abspath(os.path.join(os.path.dirname(__file__), "../../sample-data", f"{ds.name}.csv")),
+                          os.path.join(os.path.dirname(__file__), f"../../sample-data/{ds.name}.csv")]:
+                    if os.path.exists(p):
+                        stored_path = p
+                        break
+            if stored_path and os.path.exists(stored_path):
+                with open(stored_path, "rb") as fh:
+                    content = fh.read()
+                return parse_dataset_content(content, ds.filename or stored_path)
+        except Exception:
+            pass
+        return None
+    try:
+        df_current = _load_df_for_dataset(dataset)
+        if baseline_dataset:
+            df_baseline = _load_df_for_dataset(baseline_dataset)
+    except Exception:
+        pass
+
     all_issues = []
 
-    # 1. Deterministic Schema Drift Check - Watchtower-enhanced with row-count, null-rate, numeric, cardinality
+    # 1. Deterministic Schema Drift Check - Watchtower-enhanced with row-count, null-rate, numeric, cardinality + statistical (PSI/KS/JSD)
     if baseline_schema:
         base_cols = [{
             "column_name": c.column_name,
@@ -376,47 +449,58 @@ def scan_dataset(
         drift_issues = detect_schema_drift(
             base_cols, curr_cols,
             baseline_row_count=baseline_row_count,
-            current_row_count=current_row_count
+            current_row_count=current_row_count,
+            baseline_df=df_baseline,
+            current_df=df_current,
         )
         all_issues.extend(drift_issues)
 
     # 2. Deterministic Quality Checks - try comprehensive engine with stored file, fallback to metadata
     quality_ran = False
-    df_quality = None
-    try:
-        # Locate stored file for current dataset - exact match
-        exact_path = os.path.join(STORAGE_DIR, f"{dataset.id}_{dataset.filename}")
-        stored_path = exact_path if os.path.exists(exact_path) else None
-        # Fallback: search by id prefix (for legacy)
-        if not stored_path:
-            for fname in os.listdir(STORAGE_DIR):
-                if fname.startswith(f"{dataset.id}_"):
-                    # Ensure filename matches dataset's filename to avoid stale id collision
-                    if fname == f"{dataset.id}_{dataset.filename}":
-                        stored_path = os.path.join(STORAGE_DIR, fname)
-                        break
-            if not stored_path:
-                for fname in os.listdir(STORAGE_DIR):
-                    if fname.startswith(f"{dataset.id}_"):
-                        stored_path = os.path.join(STORAGE_DIR, fname)
-                        break
-        # Fallback for demo datasets that were seeded from sample-data
-        if not stored_path and dataset.name in ("orders_v1","orders_v2_schema_drift","orders_bad_quality","customers_v1","products_v1"):
-            candidate = os.path.abspath(os.path.join(STORAGE_DIR, "../../sample-data", f"{dataset.name}.csv"))
-            alt = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../sample-data", f"{dataset.name}.csv"))
-            for p in [candidate, alt, os.path.join(os.path.dirname(__file__), f"../../sample-data/{dataset.name}.csv")]:
-                if os.path.exists(p):
-                    stored_path = p
-                    break
-        if stored_path and os.path.exists(stored_path):
-            with open(stored_path, "rb") as fh:
-                content = fh.read()
-            df_quality = parse_dataset_content(content, dataset.filename or stored_path)
+    df_quality = df_current  # reuse preloaded df if available
+    if df_quality is not None:
+        try:
             q_issues = run_quality_checks(df_quality, dataset_name=dataset.name)
             all_issues.extend(q_issues)
             quality_ran = True
-    except Exception:
-        quality_ran = False
+        except Exception:
+            quality_ran = False
+            df_quality = None
+    if not quality_ran:
+        try:
+            # Locate stored file for current dataset - exact match
+            exact_path = os.path.join(STORAGE_DIR, f"{dataset.id}_{dataset.filename}")
+            stored_path = exact_path if os.path.exists(exact_path) else None
+            # Fallback: search by id prefix (for legacy)
+            if not stored_path:
+                for fname in os.listdir(STORAGE_DIR):
+                    if fname.startswith(f"{dataset.id}_"):
+                        # Ensure filename matches dataset's filename to avoid stale id collision
+                        if fname == f"{dataset.id}_{dataset.filename}":
+                            stored_path = os.path.join(STORAGE_DIR, fname)
+                            break
+                if not stored_path:
+                    for fname in os.listdir(STORAGE_DIR):
+                        if fname.startswith(f"{dataset.id}_"):
+                            stored_path = os.path.join(STORAGE_DIR, fname)
+                            break
+            # Fallback for demo datasets that were seeded from sample-data
+            if not stored_path and dataset.name in ("orders_v1","orders_v2_schema_drift","orders_bad_quality","customers_v1","products_v1"):
+                candidate = os.path.abspath(os.path.join(STORAGE_DIR, "../../sample-data", f"{dataset.name}.csv"))
+                alt = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../sample-data", f"{dataset.name}.csv"))
+                for p in [candidate, alt, os.path.join(os.path.dirname(__file__), f"../../sample-data/{dataset.name}.csv")]:
+                    if os.path.exists(p):
+                        stored_path = p
+                        break
+            if stored_path and os.path.exists(stored_path):
+                with open(stored_path, "rb") as fh:
+                    content = fh.read()
+                df_quality = parse_dataset_content(content, dataset.filename or stored_path)
+                q_issues = run_quality_checks(df_quality, dataset_name=dataset.name)
+                all_issues.extend(q_issues)
+                quality_ran = True
+        except Exception:
+            quality_ran = False
 
     # 2b. Quality Contracts evaluation (SodaCL / GE suite inspired) — versioned, explainable
     try:

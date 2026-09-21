@@ -68,6 +68,11 @@ ISSUE_TO_DIMENSION: Dict[str, str] = {
     "RULE_EXECUTION_ERROR": "validity",
     # schema evolution
     "COLUMN_RENAMED_CANDIDATE": "schema_stability",
+    # statistical drift (Phase 5 PSI/KS/JSD)
+    "NUMERIC_PSI_DRIFT": "distribution_stability",
+    "NUMERIC_KS_DRIFT": "distribution_stability",
+    "CATEGORICAL_PSI_DRIFT": "distribution_stability",
+    "CATEGORICAL_JSD_DRIFT": "distribution_stability",
 }
 
 def _freshness_score(df: Optional[pd.DataFrame]) -> tuple[int, str]:

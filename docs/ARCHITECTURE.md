@@ -73,10 +73,15 @@
      - Persisted `incidents` (`scan_id/dataset_id/dataset_name/title/severity/status/root_cause/affected_columns/affected_assets/issue_ids/issue_types/issue_count/correlation_evidence/quality_score_at_incident`), status `OPEN→RESOLVED/CLOSED` via `PUT /api/incidents/{id}`.
      - APIs: `GET /api/incidents` (filter `dataset_id/name/severity/status`), `GET /api/incidents/{id}`, `PUT ...` (status), `GET /api/scans/{id}/incidents`, `GET /api/datasets/{id}/incidents`; scan auto-creates incident via `correlate_incidents_for_scan`.
      - Study: Elementary incident grouping + OpenLineage downstream impact → deterministic correlation.
-   - `lineage.py`: Dependency graph mapping (Column -> SQL Model -> Dashboard).
+   - `lineage.py` + `lineage_graph.py` + `LineageEdge` table — **Phase 8** (OpenLineage/Marquez graph):
+     - Graph model: `LineageEdge` (`source_dataset/source_column → target_dataset/target_column` via `job_name/run_id`, `target_type` `DATASET/JOB/SQL_MODEL/DASHBOARD`, `relationship` `DIRECT/TRANSFORMED/AGGREGATION`, `is_active`, `created_by`) — OpenLineage `Dataset/Job/Run` + Marquez storage/API concepts, lightweight.
+     - Seeded from `lineage_config.json` (demo) into DB on first query via `_ensure_seeded`, fallback to heuristic (`_joined_view`, `daily_metrics`) if no edge; DB-backed `is_demo` flag (seeded demo vs custom production).
+     - Traversal: BFS `traverse_graph` with `max_depth` 1-5, cycle protection via `visited` set, dataset+column level, upstream/downstream, `get_lineage_graph` both directions; `get_direct_downstream/upstream` for 1-hop.
+     - APIs: `POST/GET/DELETE /api/lineage/edges`, `GET /api/lineage/graph?dataset=&column=&depth=`, `GET /api/lineage/{dataset}/downstream?column=&depth=`, `GET /api/lineage/{dataset}/upstream`, enhanced `GET /api/lineage/{dataset}/{column}` (DB first, demo flag), `GET /api/lineage/config` file editable; incidents use `get_downstream_impact` DB for `affected_assets`.
+     - Study: OpenLineage lineage events + Marquez graph storage → demonstrable lineage without distributed platform.
    - `contracts.py` + `dataset_contracts.json`: Table-type & PK contracts (entity/fact/event) eliminating heuristic `endswith _id` false positives.
    - `ai.py` + `ai_provider.py`: OpenAI/Gemini/Mock analyst with structured `AIAnalysisOutput`.
-   - Database layer: SQLAlchemy 2.0 → PostgreSQL (SQLite fallback for hermetic tests); `quality_contracts` + `baselines` + `incidents` + `scans.quality_score/dimensions` via `create_all` + `run_migrations()` additive `ALTER TABLE`.
+   - Database layer: SQLAlchemy 2.0 → PostgreSQL (SQLite fallback for hermetic tests); `quality_contracts` + `baselines` + `incidents` + `lineage_edges` + `scans.quality_score/dimensions` via `create_all` + `run_migrations()` additive `ALTER TABLE`.
 
 3. **Storage (`database/` + `storage_backend.py`)**:
     - PostgreSQL with `run_migrations()` additive `ALTER TABLE` on startup (no Alembic, safe for SQLite/PG): `scans.baseline_dataset_id/incident_*/quality_score/quality_dimensions`, `schema_columns.null_rate/.../top_values`, `ai_analysis.technical_impact/business_impact`.
@@ -92,6 +97,6 @@
 
 6. **Integration & Demo Assets**:
     - Real Olist 9 CSVs (99k orders, 1M geolocation) verified live: `olist_geolocation_dataset.csv` 58MB now passes; `orders_v1 → orders_v2` rename `order_value→order_amount` produces `COLUMN_RENAMED_CANDIDATE`; `amount` distribution shift 100→500 triggers `NUMERIC_PSI_DRIFT` + `CATEGORICAL_PSI_DRIFT`.
-    - `GET /api/datasets/{id}/history` now includes `quality_score`/`quality_dimensions` + `business_impact`, `GET /dashboard/*` 3 endpoints, `GET /scans/{id}/gate`, `GET /scans/{id}/score` (dimensions + summary), `GET /api/datasets/{id}/schema/history` + `.../schema/compare` (now with statistical drifts), `GET /api/baselines` + `.../baselines/{id}/compare/{dataset_id}` for explicit baselines, `GET /api/incidents` + `.../scans/{id}/incidents` for correlated incidents, `POST /scans/{id}/analyze` history-aware.
+    - `GET /api/datasets/{id}/history` now includes `quality_score`/`quality_dimensions` + `business_impact`, `GET /dashboard/*` 3 endpoints, `GET /scans/{id}/gate`, `GET /scans/{id}/score` (dimensions + summary), `GET /api/datasets/{id}/schema/history` + `.../schema/compare` (now with statistical drifts), `GET /api/baselines` + `.../baselines/{id}/compare/{dataset_id}` for explicit baselines, `GET /api/incidents` + `.../scans/{id}/incidents` for correlated incidents, `GET /api/lineage/graph` + `.../{dataset}/downstream/upstream` + `.../edges` for DB graph, `POST /scans/{id}/analyze` history-aware.
     - Contracts: `GET /api/contracts` + `POST /api/datasets/{id}/contracts/evaluate` for Soda-style declarative checks.
-    - Tests: 74 hermetic `pytest` (7 core + 10 Watchtower + 13 contracts + 10 quality_score + 5 schema_evolution + 14 statistical_drift + 7 baselines + 8 incidents) + `next build` 6 routes.
+    - Tests: 83 hermetic `pytest` (7 core + 10 Watchtower + 13 contracts + 10 quality_score + 5 schema_evolution + 14 statistical_drift + 7 baselines + 8 incidents + 9 lineage_graph) + `next build` 6 routes.

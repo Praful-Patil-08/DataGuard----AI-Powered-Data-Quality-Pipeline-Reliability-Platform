@@ -14,6 +14,7 @@ from drift import detect_schema_drift, generate_incident_summary, assess_gate
 from quality import run_quality_checks
 from quality_score import compute_quality_score
 from lineage import get_downstream_impact, DEFAULT_LINEAGE_MAP, get_lineage_config, is_demo_lineage, CONFIG_PATH
+import lineage_graph
 from ai import run_ai_analyst
 import quality_contracts as qc_manager
 import baselines as baseline_manager
@@ -1027,8 +1028,101 @@ def update_lineage_config(payload: dict, db: Session = Depends(get_db)):
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+# ----------------- Lineage Graph (OpenLineage/Marquez — Phase 8) -----------------
+@app.post("/api/lineage/edges", response_model=schemas.LineageEdgeResponse)
+def create_lineage_edge(payload: schemas.LineageEdgeCreate, db: Session = Depends(get_db)):
+    try:
+        edge = lineage_graph.create_edge(db, payload.model_dump())
+        return edge
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.get("/api/lineage/edges", response_model=List[schemas.LineageEdgeResponse])
+def list_lineage_edges(
+    source_dataset: Optional[str] = None,
+    source_column: Optional[str] = None,
+    target_dataset: Optional[str] = None,
+    job_name: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    return lineage_graph.list_edges(db, source_dataset=source_dataset, source_column=source_column, target_dataset=target_dataset, job_name=job_name)
+
+@app.delete("/api/lineage/edges/{edge_id}")
+def delete_lineage_edge(edge_id: int, db: Session = Depends(get_db)):
+    edge = db.query(models.LineageEdge).filter(models.LineageEdge.id == edge_id).first()
+    if not edge:
+        raise HTTPException(status_code=404, detail="Edge not found")
+    db.delete(edge)
+    db.commit()
+    return {"status": "deleted", "edge_id": edge_id}
+
+@app.get("/api/lineage/graph", response_model=schemas.LineageGraphResponse)
+def get_lineage_graph_endpoint(
+    dataset: str,
+    column: Optional[str] = None,
+    depth: int = 3,
+    db: Session = Depends(get_db)
+):
+    if depth < 1 or depth > 5:
+        raise HTTPException(status_code=400, detail="depth must be 1-5")
+    return lineage_graph.get_lineage_graph(db, dataset, column, depth=depth)
+
+@app.get("/api/lineage/{dataset}/downstream", response_model=schemas.LineageTraversalResponse)
+def get_dataset_downstream(dataset: str, column: Optional[str] = None, depth: int = 3, db: Session = Depends(get_db)):
+    if depth < 1 or depth > 5:
+        raise HTTPException(status_code=400, detail="depth must be 1-5")
+    return lineage_graph.traverse_graph(db, dataset, column, direction="downstream", max_depth=depth)
+
+@app.get("/api/lineage/{dataset}/upstream", response_model=schemas.LineageTraversalResponse)
+def get_dataset_upstream(dataset: str, column: Optional[str] = None, depth: int = 3, db: Session = Depends(get_db)):
+    if depth < 1 or depth > 5:
+        raise HTTPException(status_code=400, detail="depth must be 1-5")
+    return lineage_graph.traverse_graph(db, dataset, column, direction="upstream", max_depth=depth)
+
 @app.get("/api/lineage/{dataset_name}/{column_name}", response_model=schemas.ColumnImpactResponse)
-def get_column_lineage(dataset_name: str, column_name: str):
+def get_column_lineage(dataset_name: str, column_name: str, db: Session = Depends(get_db)):
+    # Try DB-backed lineage first (OpenLineage/Marquez inspired)
+    try:
+        db_edges = lineage_graph.get_direct_downstream(db, dataset_name, column_name)
+        if db_edges:
+            downstream = []
+            for e in db_edges:
+                downstream.append(schemas.DownstreamAsset(
+                    name=e["target_dataset"],
+                    asset_type=e["target_type"],
+                    relationship=e["relationship"]
+                ))
+            # Determine if demo: seeded edges are still demo until custom production lineage added
+            try:
+                # Check if any edge is custom (not seeded)
+                # Seeded edges have description containing "Seeded" and created_by system
+                has_custom = any(
+                    not (e.get("description") and "Seeded" in e["description"])
+                    for e in db_edges
+                )
+                # Also check DB for any custom edge for this dataset/column that is not seeded
+                # For MVP, if we have any DB edge, check its source: if all are seeded, is_demo True
+                is_demo_val = not has_custom
+                demo_note = "DB-backed lineage (LineageEdge) — seeded from lineage_config.json, editable via POST /api/lineage/edges" if not is_demo_val else "Seeded demo lineage (LineageEdge) from lineage_config.json — replace with OpenLineage/dbt in production."
+                return schemas.ColumnImpactResponse(
+                    column_name=column_name,
+                    dataset_name=dataset_name,
+                    affected_assets=downstream,
+                    is_demo=is_demo_val,
+                    demo_note=demo_note
+                )
+            except Exception:
+                return schemas.ColumnImpactResponse(
+                    column_name=column_name,
+                    dataset_name=dataset_name,
+                    affected_assets=downstream,
+                    is_demo=False,
+                    demo_note="DB-backed lineage (LineageEdge) — seeded from lineage_config.json, editable via POST /api/lineage/edges"
+                )
+    except Exception:
+        pass
     assets = get_downstream_impact(dataset_name, column_name)
     downstream = [schemas.DownstreamAsset(**a) for a in assets]
     demo = is_demo_lineage(dataset_name, column_name)
@@ -1039,6 +1133,7 @@ def get_column_lineage(dataset_name: str, column_name: str):
         is_demo=demo,
         demo_note="Static demo lineage from lineage_config.json — replace with OpenLineage/dbt in production."
     )
+
 
 # ----------------- Quality Contracts (SodaCL / GE suite) -----------------
 @app.post("/api/contracts", response_model=schemas.QualityContractResponse)

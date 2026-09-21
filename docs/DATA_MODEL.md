@@ -134,12 +134,25 @@
 - `decision_at`: TIMESTAMP WITH TIME ZONE
 - `notes`: TEXT
 
-### `dependencies` (Lineage — demo)
+### `dependencies` (Lineage — demo, legacy)
 - `id`: UUID / Integer (Primary Key)
 - `source_asset`: VARCHAR(255) (e.g. `orders.order_value`)
 - `target_asset`: VARCHAR(255) (e.g. `revenue_model`)
 - `relationship_type`: VARCHAR(50) (e.g. `DERIVED_BY`, `USED_BY_DASHBOARD`)
-- File `lineage_config.json` editable via `GET/PUT /api/lineage/config` (`is_demo:true`)
+- File `lineage_config.json` editable via `GET/PUT /api/lineage/config` (`is_demo:true`) — now seeded into `lineage_edges` on first DB query
+
+### `lineage_edges` (DB graph — Phase 8, OpenLineage/Marquez)
+- `id`: UUID / Integer (Primary Key)
+- `source_dataset`: VARCHAR(255) indexed (e.g., `orders`)
+- `source_column`: VARCHAR(255) nullable indexed (e.g., `order_value`, None for dataset-level)
+- `target_dataset`: VARCHAR(255) indexed (e.g., `revenue_model`)
+- `target_column`: VARCHAR(255) nullable indexed
+- `target_type`: VARCHAR(50) indexed (`DATASET`, `JOB`, `SQL_MODEL`, `DASHBOARD`)
+- `job_name`: VARCHAR(255) nullable indexed (e.g., `revenue_pipeline`)
+- `run_id`: VARCHAR(100) nullable indexed (e.g., `run_123`)
+- `relationship`: VARCHAR(50) (`DIRECT`, `TRANSFORMED`, `AGGREGATION`, etc.)
+- `description`: TEXT, `is_active`: BOOLEAN indexed, `created_by`: VARCHAR(255), `created_at`/`updated_at`: TIMESTAMP
+- `lineage_graph.py`: `_ensure_seeded` from `lineage_config.json`, `create_edge`, `list_edges`, `get_direct_downstream/upstream`, `traverse_graph` BFS with `max_depth` 1-5 and cycle protection via `visited`, `get_lineage_graph` both directions; APIs `POST/GET/DELETE /api/lineage/edges`, `GET /api/lineage/graph`, `GET /api/lineage/{dataset}/downstream/upstream`, enhanced `GET /api/lineage/{dataset}/{column}` (DB first, `is_demo` flag for seeded vs custom)
 
 ### `schemas` + `schema_columns` + historical evolution (Phase 4) + statistical (Phase 5) + baselines (Phase 6)
 - `schemas` stores per-physical-dataset fingerprint + `created_at`; `schema_columns` stores profiling stats (null_rate, unique_ratio, mean, etc.)

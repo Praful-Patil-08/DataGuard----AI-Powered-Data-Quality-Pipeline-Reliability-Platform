@@ -254,3 +254,35 @@ class Incident(Base):
 
     scan = relationship("Scan", foreign_keys=[scan_id], back_populates="incidents")
     dataset = relationship("Dataset", foreign_keys=[dataset_id])
+
+
+class LineageEdge(Base):
+    """
+    Lineage edge — dataset/column -> dataset/column via job/run.
+
+    Inspired by OpenLineage (Dataset/Job/Run) + Marquez (lineage storage/API):
+    - source: dataset + column (column nullable for dataset-level)
+    - target: dataset/job/dashboard + column
+    - job/run metadata for pipeline execution lineage
+    - relationship: DIRECT_INPUT, TRANSFORMED, AGGREGATION, etc.
+    - Deterministic, versioned via created_at, is_active soft-delete.
+
+    Example:
+        orders.order_value --[revenue_pipeline#42]--> revenue_model --[rollup]--> Executive Dashboard
+    """
+    __tablename__ = "lineage_edges"
+
+    id = Column(Integer, primary_key=True, index=True)
+    source_dataset = Column(String(255), nullable=False, index=True)  # e.g., orders
+    source_column = Column(String(255), nullable=True, index=True)  # e.g., order_value, None for dataset-level
+    target_dataset = Column(String(255), nullable=False, index=True)  # e.g., revenue_model
+    target_column = Column(String(255), nullable=True, index=True)  # optional column in target
+    target_type = Column(String(50), default="DATASET", nullable=False, index=True)  # DATASET, JOB, SQL_MODEL, DASHBOARD
+    job_name = Column(String(255), nullable=True, index=True)  # e.g., revenue_pipeline
+    run_id = Column(String(100), nullable=True, index=True)  # e.g., run_42
+    relationship = Column(String(50), default="DIRECT", nullable=False)  # DIRECT, TRANSFORMED, AGGREGATION
+    description = Column(Text, nullable=True)
+    is_active = Column(Boolean, default=True, nullable=False, index=True)
+    created_by = Column(String(255), nullable=True, default="system")
+    created_at = Column(DateTime, default=lambda: datetime.datetime.now(datetime.timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.datetime.now(datetime.timezone.utc), onupdate=lambda: datetime.datetime.now(datetime.timezone.utc))

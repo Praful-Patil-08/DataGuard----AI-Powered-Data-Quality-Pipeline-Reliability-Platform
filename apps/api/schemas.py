@@ -206,6 +206,48 @@ class ColumnImpactResponse(BaseModel):
     is_demo: bool = True
     demo_note: str = "Static demo lineage from lineage.py — replace with OpenLineage/dbt in production."
 
+class LineageEdgeCreate(BaseModel):
+    source_dataset: str
+    source_column: Optional[str] = None
+    target_dataset: str
+    target_column: Optional[str] = None
+    target_type: str = "DATASET"  # DATASET, JOB, SQL_MODEL, DASHBOARD
+    job_name: Optional[str] = None
+    run_id: Optional[str] = None
+    relationship: str = "DIRECT"
+    description: Optional[str] = None
+
+class LineageEdgeResponse(BaseModel):
+    id: int
+    source_dataset: str
+    source_column: Optional[str] = None
+    target_dataset: str
+    target_column: Optional[str] = None
+    target_type: str
+    job_name: Optional[str] = None
+    run_id: Optional[str] = None
+    relationship: str
+    description: Optional[str] = None
+    is_active: bool
+    created_by: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
+class LineageGraphResponse(BaseModel):
+    dataset: str
+    column: Optional[str] = None
+    depth: int
+    downstream: Dict[str, Any] = Field(default_factory=dict)
+    upstream: Dict[str, Any] = Field(default_factory=dict)
+
+class LineageTraversalResponse(BaseModel):
+    start: Dict[str, Any]
+    nodes: List[Dict[str, Any]] = []
+    edges: List[Dict[str, Any]] = []
+    node_count: int
+    edge_count: int
+
 # --- Quality Contract Schemas ---
 class QualityContractCreate(BaseModel):
     dataset_name: str

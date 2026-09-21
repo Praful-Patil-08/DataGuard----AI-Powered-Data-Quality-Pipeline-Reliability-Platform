@@ -40,7 +40,11 @@
 2. **Backend (`apps/api`)**:
    - FastAPI (Python 3.11+).
    - `scanner.py`: Ingestion, validation, profiling (Pandas + IQR outlier detection).
-   - `drift.py`: Schema & statistical drift (COLUMN_REMOVED/ADDED, TYPE_CHANGED, NULL_RATE/CARDINALITY/NUMERIC/ROW_COUNT drifts + incident summary + gate).
+   - `drift.py`: Schema evolution & statistical drift — **Phase 4** (Watchtower + rename):
+     - Detects `COLUMN_REMOVED`/`COLUMN_ADDED`/`TYPE_CHANGED`/`NULLABILITY_CHANGED` + Watchtower `NULL_RATE/CARDINALITY/NUMERIC/ROW_COUNT` drifts, row-count gate.
+     - Rename detection: evidence-based `COLUMN_RENAMED_CANDIDATE` (never auto-claims) with confidence `0.5*name_sim +0.3*type_compat +0.2*stat_sim` via `difflib.SequenceMatcher + token overlap` + type compatibility + null_rate/unique_ratio delta; thresholds `possible ≥0.60`, `likely ≥0.75`, `very likely ≥0.85`, emitted as `INFO` with `from_column/to_column/confidence/evidence` (name_sim, type_compat, stat_sim), greedy one-to-one.
+     - Historical schema versions: per-physical `Schemas` + logical evolution across `orders%` prefix; endpoints `GET /api/datasets/{id}/schemas`, `GET /api/datasets/{id}/schema/history` (physical + logical), `GET /api/datasets/{id}/schema/compare?baseline_dataset_id=` (drift + rename candidates).
+     - Incident summary + gate unchanged; scoring treats `COLUMN_RENAMED_CANDIDATE` as INFO (no penalty).
    - `quality/`: Modular deterministic quality engine — **Phase 1** (Great Expectations / Soda-inspired):
      - `quality/rule.py` (`QualityRule` ABC) + `quality/result.py` (`RuleResult`) + `quality/registry.py` (`QualityRuleRegistry`) + `quality/engine.py` (`QualityEngine` + `run_quality_checks()` façade).
      - `quality/rules/` — 8 isolated rules: `empty_dataset`, `primary_key` (contract-aware composite), `duplicate_rows`, `null_rate`, `negative_value`, `numeric_anomaly` (z-score), `date_validation`, `categorical_consistency`.
@@ -75,7 +79,7 @@
     - Scans: `scans/[id]` ordered WHAT (incident+gate `PASS/FAIL`) → WHAT changed → AFFECTED (ImpactGraph `is_demo:true`) → WHY/IMPACT/ACTION (AI) → Audit Timeline → Approve/Reject → `/audit?status=&severity=&dataset_id=` filters.
 
 6. **Integration & Demo Assets**:
-    - Real Olist 9 CSVs (99k orders, 1M geolocation) verified live: `olist_geolocation_dataset.csv` 58MB now passes.
-    - `GET /api/datasets/{id}/history` now includes `quality_score`/`quality_dimensions` + `business_impact`, `GET /dashboard/*` 3 endpoints, `GET /scans/{id}/gate`, `GET /scans/{id}/score` (dimensions + summary), `POST /scans/{id}/analyze` history-aware.
+    - Real Olist 9 CSVs (99k orders, 1M geolocation) verified live: `olist_geolocation_dataset.csv` 58MB now passes; `orders_v1 → orders_v2` rename `order_value→order_amount` produces `COLUMN_RENAMED_CANDIDATE` with confidence.
+    - `GET /api/datasets/{id}/history` now includes `quality_score`/`quality_dimensions` + `business_impact`, `GET /dashboard/*` 3 endpoints, `GET /scans/{id}/gate`, `GET /scans/{id}/score` (dimensions + summary), `GET /api/datasets/{id}/schema/history` + `.../schema/compare`, `POST /scans/{id}/analyze` history-aware.
     - Contracts: `GET /api/contracts` + `POST /api/datasets/{id}/contracts/evaluate` for Soda-style declarative checks.
-    - Tests: 40 hermetic `pytest` (7 core + 10 Watchtower + 13 contracts + 10 quality_score) + `next build` 6 routes.
+    - Tests: 45 hermetic `pytest` (7 core + 10 Watchtower + 13 contracts + 10 quality_score + 5 schema_evolution) + `next build` 6 routes.

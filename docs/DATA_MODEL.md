@@ -49,12 +49,12 @@
 ### `issues` (populated by `quality/` registry + `drift.py` + `quality_contracts.py`)
 - `id`: UUID / Integer (Primary Key)
 - `scan_id`: FK -> `scans.id`
-- `issue_type`: VARCHAR(100) (COLUMN_REMOVED, COLUMN_ADDED, TYPE_CHANGED, NULLABILITY_CHANGED, NULL_RATE_DRIFT, CARDINALITY_DRIFT, NUMERIC_DRIFT, ROW_COUNT_DRIFT, EMPTY_DATASET, PRIMARY_KEY_NULL, DUPLICATE_PRIMARY_KEY, DUPLICATE_ROWS, HIGH_NULL_RATE, NEGATIVE_VALUE_ANOMALY, NUMERIC_ANOMALY, MALFORMED_DATE, CATEGORICAL_INCONSISTENCY, RULE_EXECUTION_ERROR, CONTRACT_BREACH_COMPLETENESS, CONTRACT_BREACH_UNIQUENESS, CONTRACT_BREACH_RANGE, CONTRACT_BREACH_REGEX, CONTRACT_BREACH_ROW_COUNT, CONTRACT_UNKNOWN_TYPE, CONTRACT_EVALUATION_ERROR)
+- `issue_type`: VARCHAR(100) (COLUMN_REMOVED, COLUMN_ADDED, TYPE_CHANGED, NULLABILITY_CHANGED, NULL_RATE_DRIFT, CARDINALITY_DRIFT, NUMERIC_DRIFT, ROW_COUNT_DRIFT, COLUMN_RENAMED_CANDIDATE, EMPTY_DATASET, PRIMARY_KEY_NULL, DUPLICATE_PRIMARY_KEY, DUPLICATE_ROWS, HIGH_NULL_RATE, NEGATIVE_VALUE_ANOMALY, NUMERIC_ANOMALY, MALFORMED_DATE, CATEGORICAL_INCONSISTENCY, RULE_EXECUTION_ERROR, CONTRACT_BREACH_COMPLETENESS, CONTRACT_BREACH_UNIQUENESS, CONTRACT_BREACH_RANGE, CONTRACT_BREACH_REGEX, CONTRACT_BREACH_ROW_COUNT, CONTRACT_UNKNOWN_TYPE, CONTRACT_EVALUATION_ERROR)
 - `severity`: VARCHAR(20) ('CRITICAL', 'WARNING', 'INFO')
-- `column_name`: VARCHAR(255) (Nullable)
+- `column_name`: VARCHAR(255) (Nullable — for rename candidate `from -> to`)
 - `description`: TEXT
-- `metadata`: JSONB (per-rule/contract evidence: `null_count`, `negative_count`, `invalid_count`, `inconsistent_variants`, `expected_*`/`actual_*`, `contract_id`, `version`, etc.)
-- `quality/` mapping: each `QualityRule` emits `RuleResult` → `to_issue_dict()` → `Issue` row; registry order mirrors legacy `quality.py` for stable snapshots; `contracts.py` supplies `primary_key` to `PrimaryKeyRule`; `quality_contracts.py` appends `CONTRACT_BREACH_*` issues during scan.
+- `metadata`: JSONB (per-rule/contract/drift evidence: `null_count`, `negative_count`, `invalid_count`, `inconsistent_variants`, `expected_*`/`actual_*`, `contract_id`, `version`, `from_column/to_column/confidence/evidence{name_similarity,type_compatibility,stat_similarity}`, etc.)
+- `quality/` mapping: each `QualityRule` emits `RuleResult` → `to_issue_dict()` → `Issue` row; registry order mirrors legacy `quality.py` for stable snapshots; `contracts.py` supplies `primary_key` to `PrimaryKeyRule`; `quality_contracts.py` appends `CONTRACT_BREACH_*` issues during scan; `drift.py` appends `COLUMN_RENAMED_CANDIDATE` with evidence (never auto-asserts rename).
 
 ### `quality_contracts` (SodaCL / GE suite — Phase 2)
 - `id`: UUID / Integer (Primary Key)
@@ -108,6 +108,11 @@
 - `relationship_type`: VARCHAR(50) (e.g. `DERIVED_BY`, `USED_BY_DASHBOARD`)
 - File `lineage_config.json` editable via `GET/PUT /api/lineage/config` (`is_demo:true`)
 
+### `schemas` + `schema_columns` + historical evolution (Phase 4)
+- `schemas` stores per-physical-dataset fingerprint + `created_at`; `schema_columns` stores profiling stats (null_rate, unique_ratio, mean, etc.)
+- Historical versions: per-physical `GET /api/datasets/{id}/schemas` + per-logical `GET /api/datasets/{id}/schema/history` (physical + logical `orders%` evolution)
+- Schema compare `GET /api/datasets/{id}/schema/compare?baseline_dataset_id=` returns `drift_issues` including `COLUMN_RENAMED_CANDIDATE` with `confidence/evidence` (name_sim, type_compat, stat_sim), INFO severity (never suppresses `COLUMN_REMOVED`/`COLUMN_ADDED` CRITICAL/WARNING)
+
 ### `storage` + migrations
 - `storage_backend.py`: `local` `storage/{id}_{filename}` → `s3://` if `STORAGE_BACKEND=s3` (boto3 optional)
-- `database.py:run_migrations()` additive `ALTER TABLE` on startup (covers `scans`/`schema_columns`/`ai_analysis`), 100MB upload limit (handles Olist 58MB)
+- `database.py:run_migrations()` additive `ALTER TABLE` on startup (covers `scans.baseline_dataset_id/incident_*/quality_score/quality_dimensions` + `schema_columns.*` + `ai_analysis.*`), 100MB upload limit (handles Olist 58MB)

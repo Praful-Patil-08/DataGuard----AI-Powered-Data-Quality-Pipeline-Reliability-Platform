@@ -1,4 +1,5 @@
 from typing import List, Dict, Any, Optional
+import difflib
 
 SEVERITY_ORDER = {"INFO": 0, "WARNING": 1, "CRITICAL": 2, "PASSED": 0, "info": 0, "warning": 1, "critical": 2}
 
@@ -9,6 +10,127 @@ def _ratio_delta(baseline: float, candidate: float) -> float:
             return 0.0
         return 1.0
     return round((candidate - baseline) / abs(baseline), 3)
+
+def _name_similarity(a: str, b: str) -> float:
+    """Deterministic name similarity 0-1 via difflib + token overlap."""
+    a_l = a.lower()
+    b_l = b.lower()
+    # Exact case-insensitive match (unlikely since names differ)
+    if a_l == b_l:
+        return 1.0
+    # SequenceMatcher ratio (covers order_value vs order_amount 0.73)
+    seq = difflib.SequenceMatcher(None, a_l, b_l).ratio()
+    # Token overlap (split on _): order_value -> {order, value}, order_amount -> {order, amount} => 0.5 overlap
+    a_tokens = set(a_l.split("_"))
+    b_tokens = set(b_l.split("_"))
+    if a_tokens and b_tokens:
+        overlap = len(a_tokens & b_tokens) / max(len(a_tokens), len(b_tokens))
+        # Blend
+        return round(0.7 * seq + 0.3 * overlap, 3)
+    return round(seq, 3)
+
+def _type_compatibility(t1: str, t2: str) -> float:
+    """Type compatibility score 0-1. Same type 1.0, numeric family 0.8, otherwise low."""
+    if t1 == t2:
+        return 1.0
+    numeric = {"INTEGER", "FLOAT"}
+    if t1 in numeric and t2 in numeric:
+        return 0.8
+    # STRING is catch-all but breaking: low compat
+    if t1 == "STRING" or t2 == "STRING":
+        return 0.3
+    if t1 == "DATE" and t2 == "DATE":
+        return 1.0
+    return 0.2
+
+def _stat_similarity(base_col: Dict[str, Any], curr_col: Dict[str, Any]) -> float:
+    """Stat similarity: compares null_rate and unique_ratio if available. Returns 0-1."""
+    scores = []
+    for key in ("null_rate", "unique_ratio"):
+        b = base_col.get(key)
+        c = curr_col.get(key)
+        if b is not None and c is not None:
+            try:
+                # Close if delta <0.05 -> 1.0, <0.1 ->0.8, <0.2 ->0.5 else 0.2
+                delta = abs(float(b) - float(c))
+                if delta < 0.05:
+                    scores.append(1.0)
+                elif delta < 0.1:
+                    scores.append(0.8)
+                elif delta < 0.2:
+                    scores.append(0.5)
+                else:
+                    scores.append(0.2)
+            except Exception:
+                scores.append(0.5)
+    if not scores:
+        return 0.5  # neutral if no stats
+    return round(sum(scores) / len(scores), 3)
+
+def _detect_rename_candidates(
+    removed: List[Dict[str, Any]],
+    added: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """
+    Greedy rename candidate detection with evidence.
+    Never auto-claims rename; emits COLUMN_RENAMED_CANDIDATE with confidence and evidence.
+    Confidence = 0.5*name_sim + 0.3*type_compat + 0.2*stat_sim
+    - possible: 0.60-0.74, likely: 0.75-0.84, very likely: >=0.85 (but still candidate, not assertive)
+    """
+    candidates = []
+    # Score all pairs
+    scored: List[tuple[float, Dict[str, Any], Dict[str, Any], Dict[str, float]]] = []
+    for r in removed:
+        for a in added:
+            name_sim = _name_similarity(r["column_name"], a["column_name"])
+            # Require at least 0.4 name similarity to be considered (avoids random matches)
+            if name_sim < 0.4:
+                continue
+            type_sim = _type_compatibility(r.get("data_type", "STRING"), a.get("data_type", "STRING"))
+            stat_sim = _stat_similarity(r, a)
+            confidence = round(0.5 * name_sim + 0.3 * type_sim + 0.2 * stat_sim, 3)
+            if confidence >= 0.60:
+                evidence = {
+                    "name_similarity": name_sim,
+                    "type_compatibility": type_sim,
+                    "stat_similarity": stat_sim,
+                    "previous_type": r.get("data_type"),
+                    "current_type": a.get("data_type"),
+                }
+                scored.append((confidence, r, a, evidence))
+    # Greedy highest confidence first, avoid reusing same column twice (one-to-one)
+    scored.sort(key=lambda x: x[0], reverse=True)
+    used_removed = set()
+    used_added = set()
+    for confidence, r, a, evidence in scored:
+        if r["column_name"] in used_removed or a["column_name"] in used_added:
+            continue
+        # Determine label
+        if confidence >= 0.85:
+            label = "very likely"
+            severity = "INFO"  # still INFO, not CRITICAL, because uncertain
+        elif confidence >= 0.75:
+            label = "likely"
+            severity = "INFO"
+        else:
+            label = "possible"
+            severity = "INFO"
+        candidates.append({
+            "issue_type": "COLUMN_RENAMED_CANDIDATE",
+            "severity": severity,
+            "column_name": f"{r['column_name']} -> {a['column_name']}",
+            "description": f"Possible rename: '{r['column_name']}' ({r.get('data_type')}) → '{a['column_name']}' ({a.get('data_type')}) — {label} (confidence {confidence:.2f}).",
+            "metadata": {
+                "from_column": r["column_name"],
+                "to_column": a["column_name"],
+                "confidence": confidence,
+                "label": label,
+                "evidence": evidence,
+            }
+        })
+        used_removed.add(r["column_name"])
+        used_added.add(a["column_name"])
+    return candidates
 
 def detect_schema_drift(
     baseline_columns: List[Dict[str, Any]],
@@ -27,6 +149,7 @@ def detect_schema_drift(
     current_map = {col["column_name"]: col for col in current_columns}
 
     # 1. Detect COLUMN_REMOVED
+    removed_cols: List[Dict[str, Any]] = []
     for col_name, base_col in baseline_map.items():
         if col_name not in current_map:
             severity = "CRITICAL"
@@ -40,8 +163,10 @@ def detect_schema_drift(
                     "previous_nullable": base_col["nullable"],
                 }
             })
+            removed_cols.append(base_col)
 
     # 2. Detect COLUMN_ADDED
+    added_cols: List[Dict[str, Any]] = []
     for col_name, curr_col in current_map.items():
         if col_name not in baseline_map:
             issues.append({
@@ -54,6 +179,13 @@ def detect_schema_drift(
                     "current_nullable": curr_col["nullable"],
                 }
             })
+            added_cols.append(curr_col)
+
+    # 2b. Rename candidate detection (deterministic, evidence-based, never auto-claim rename)
+    # Only when both removed and added exist; compare each pair with similarity scoring
+    if removed_cols and added_cols:
+        candidates = _detect_rename_candidates(removed_cols, added_cols)
+        issues.extend(candidates)
 
     # 3. Detect TYPE_CHANGED, NULLABILITY_CHANGED and Watchtower drifts
     for col_name in baseline_map.keys() & current_map.keys():

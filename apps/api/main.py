@@ -193,6 +193,104 @@ def get_dataset_schema(dataset_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="No schema found for dataset")
     return schema
 
+@app.get("/api/datasets/{dataset_id}/schemas", response_model=List[schemas.SchemaResponse])
+def list_dataset_schemas(dataset_id: int, db: Session = Depends(get_db)):
+    ds = db.query(models.Dataset).filter(models.Dataset.id == dataset_id).first()
+    if not ds:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    schemas = db.query(models.SchemaRecord).filter(models.SchemaRecord.dataset_id == dataset_id).order_by(desc(models.SchemaRecord.created_at)).all()
+    return schemas
+
+@app.get("/api/datasets/{dataset_id}/schema/history")
+def get_schema_history(dataset_id: int, db: Session = Depends(get_db)):
+    """
+    Historical schema versions — per logical dataset (prefix) and per physical dataset.
+    Returns both physical schemas for this dataset and logical evolution across prefix.
+    """
+    ds = db.query(models.Dataset).filter(models.Dataset.id == dataset_id).first()
+    if not ds:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    # Physical schemas for this dataset
+    physical = db.query(models.SchemaRecord).filter(models.SchemaRecord.dataset_id == dataset_id).order_by(models.SchemaRecord.created_at.asc()).all()
+    # Logical: find datasets with same prefix
+    prefix = ds.name.split("_v")[0].split("_bad")[0].split("_drift")[0] if ds.name else ds.name
+    # Fallback to first token
+    if not prefix:
+        prefix = ds.name
+    else:
+        # Use first token if prefix too long? Keep as is
+        pass
+    logical_datasets = db.query(models.Dataset).filter(models.Dataset.name.like(f"{prefix}%")).order_by(models.Dataset.created_at.asc()).all()
+    logical = []
+    for lds in logical_datasets:
+        sch = db.query(models.SchemaRecord).filter(models.SchemaRecord.dataset_id == lds.id).order_by(desc(models.SchemaRecord.created_at)).first()
+        if sch:
+            logical.append({
+                "dataset_id": lds.id,
+                "dataset_name": lds.name,
+                "schema_id": sch.id,
+                "fingerprint": sch.fingerprint,
+                "created_at": sch.created_at.isoformat() if sch.created_at else None,
+                "column_count": len(sch.columns),
+                "columns": [{"column_name": c.column_name, "data_type": c.data_type, "nullable": c.nullable} for c in sch.columns],
+            })
+    return {
+        "dataset_id": dataset_id,
+        "dataset_name": ds.name,
+        "physical_history": [{"id": s.id, "fingerprint": s.fingerprint, "created_at": s.created_at.isoformat() if s.created_at else None} for s in physical],
+        "logical_evolution": logical,
+    }
+
+@app.get("/api/datasets/{dataset_id}/schema/compare")
+def compare_schemas(dataset_id: int, baseline_dataset_id: int, db: Session = Depends(get_db)):
+    """
+    Compare schemas deterministically — returns drift issues including rename candidates with evidence.
+    """
+    ds = db.query(models.Dataset).filter(models.Dataset.id == dataset_id).first()
+    base_ds = db.query(models.Dataset).filter(models.Dataset.id == baseline_dataset_id).first()
+    if not ds or not base_ds:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    curr_schema = db.query(models.SchemaRecord).filter(models.SchemaRecord.dataset_id == dataset_id).order_by(desc(models.SchemaRecord.created_at)).first()
+    base_schema = db.query(models.SchemaRecord).filter(models.SchemaRecord.dataset_id == baseline_dataset_id).order_by(desc(models.SchemaRecord.created_at)).first()
+    if not curr_schema or not base_schema:
+        raise HTTPException(status_code=404, detail="Schema not found for one of the datasets")
+    curr_cols = [{
+        "column_name": c.column_name,
+        "data_type": c.data_type,
+        "nullable": c.nullable,
+        "null_count": c.null_count,
+        "unique_count": c.unique_count,
+        "null_rate": c.null_rate if c.null_rate is not None else 0.0,
+        "unique_ratio": c.unique_ratio if c.unique_ratio is not None else 0.0,
+        "mean": c.mean, "median": c.median, "min_value": c.min_value, "max_value": c.max_value,
+        "p05": c.p05, "p95": c.p95, "outlier_count": c.outlier_count or 0, "outlier_rate": c.outlier_rate if c.outlier_rate is not None else 0.0,
+        "top_values": c.top_values or [],
+    } for c in curr_schema.columns]
+    base_cols = [{
+        "column_name": c.column_name,
+        "data_type": c.data_type,
+        "nullable": c.nullable,
+        "null_count": c.null_count,
+        "unique_count": c.unique_count,
+        "null_rate": c.null_rate if c.null_rate is not None else 0.0,
+        "unique_ratio": c.unique_ratio if c.unique_ratio is not None else 0.0,
+        "mean": c.mean, "median": c.median, "min_value": c.min_value, "max_value": c.max_value,
+        "p05": c.p05, "p95": c.p95, "outlier_count": c.outlier_count or 0, "outlier_rate": c.outlier_rate if c.outlier_rate is not None else 0.0,
+        "top_values": c.top_values or [],
+    } for c in base_schema.columns]
+    drift_issues = detect_schema_drift(base_cols, curr_cols, baseline_row_count=base_ds.row_count, current_row_count=ds.row_count)
+    # Split rename candidates
+    rename_candidates = [i for i in drift_issues if i["issue_type"] == "COLUMN_RENAMED_CANDIDATE"]
+    return {
+        "baseline_dataset_id": baseline_dataset_id,
+        "baseline_dataset_name": base_ds.name,
+        "candidate_dataset_id": dataset_id,
+        "candidate_dataset_name": ds.name,
+        "drift_issues": drift_issues,
+        "rename_candidates": rename_candidates,
+        "summary": f"{len(drift_issues)} drift issues, {len(rename_candidates)} rename candidates"
+    }
+
 # ----------------- Scanning & Deterministic Engines -----------------
 @app.post("/api/datasets/{dataset_id}/scan", response_model=schemas.ScanResponse)
 def scan_dataset(

@@ -66,6 +66,8 @@ ISSUE_TO_DIMENSION: Dict[str, str] = {
     "CONTRACT_EVALUATION_ERROR": "validity",
     "CONTRACT_UNKNOWN_TYPE": "validity",
     "RULE_EXECUTION_ERROR": "validity",
+    # schema evolution
+    "COLUMN_RENAMED_CANDIDATE": "schema_stability",
 }
 
 def _freshness_score(df: Optional[pd.DataFrame]) -> tuple[int, str]:

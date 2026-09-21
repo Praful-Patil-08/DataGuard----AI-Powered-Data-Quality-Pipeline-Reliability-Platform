@@ -41,15 +41,20 @@
    - FastAPI (Python 3.11+).
    - `scanner.py`: Ingestion, validation, profiling (Pandas + IQR outlier detection).
    - `drift.py`: Schema & statistical drift (COLUMN_REMOVED/ADDED, TYPE_CHANGED, NULL_RATE/CARDINALITY/NUMERIC/ROW_COUNT drifts + incident summary + gate).
-   - `quality/`: Modular deterministic quality engine — **Phase 1 refactor** (Great Expectations / Soda-inspired):
+   - `quality/`: Modular deterministic quality engine — **Phase 1** (Great Expectations / Soda-inspired):
      - `quality/rule.py` (`QualityRule` ABC) + `quality/result.py` (`RuleResult`) + `quality/registry.py` (`QualityRuleRegistry`) + `quality/engine.py` (`QualityEngine` + `run_quality_checks()` façade).
      - `quality/rules/` — 8 isolated rules: `empty_dataset`, `primary_key` (contract-aware composite), `duplicate_rows`, `null_rate`, `negative_value`, `numeric_anomaly` (z-score), `date_validation`, `categorical_consistency`.
      - Preserves original `from quality import run_quality_checks` signature for zero-breakage; registry is insertion-ordered, each rule is deterministic, explainable, and unit-testable.
      - Pattern study: Great Expectations Expectations → typed per-check class + Validator; Soda Core declarative checks → registry/scan executor. DataGuard reimplements natively (no external dep).
+   - `quality_contracts.py` + `QualityContract` table — **Phase 2** (SodaCL / GE suite declarative contracts):
+     - Declarative expectations: `completeness` (e.g., `customer_id ≥99%`), `uniqueness` (`order_id =100%`), `range` (`amount positive ≥99.5%` via `min/max + threshold`), `regex` (pattern + threshold), `row_count` (table-level min/max).
+     - Stored in `quality_contracts` (versioned `version` int + `updated_at`, `enabled` flag, `params` JSON), validated via Pydantic (`threshold 0-1`, `severity` enum), separate from `issues` scan results.
+     - Dataset matching uses prefix logic (`orders` matches `orders_v1`/`orders_bad_quality`) mirroring `contracts.py`; evaluation is deterministic pandas with evidence (`expected vs actual`, `null_count`, `invalid_samples`, `version`).
+     - API: `POST/GET/PUT/DELETE /api/contracts`, `GET /api/datasets/{id}/contracts`, `POST /api/datasets/{id}/contracts/evaluate`; integrated into `scan_dataset:322` — contracts evaluated against `df_quality` and appended to `all_issues` as `CONTRACT_BREACH_*` (explainable, testable).
    - `lineage.py`: Dependency graph mapping (Column -> SQL Model -> Dashboard).
    - `contracts.py` + `dataset_contracts.json`: Table-type & PK contracts (entity/fact/event) eliminating heuristic `endswith _id` false positives.
    - `ai.py` + `ai_provider.py`: OpenAI/Gemini/Mock analyst with structured `AIAnalysisOutput`.
-   - Database layer: SQLAlchemy 2.0 → PostgreSQL (SQLite fallback for hermetic tests).
+   - Database layer: SQLAlchemy 2.0 → PostgreSQL (SQLite fallback for hermetic tests); `quality_contracts` created via `create_all` (no Alembic, safe additive).
 
 3. **Storage (`database/` + `storage_backend.py`)**:
     - PostgreSQL with `run_migrations()` additive `ALTER TABLE` on startup (no Alembic, safe for SQLite/PG): `scans.baseline_dataset_id/incident_*`, `schema_columns.null_rate/.../top_values`, `ai_analysis.technical_impact/business_impact`.
@@ -66,4 +71,5 @@
 6. **Integration & Demo Assets**:
     - Real Olist 9 CSVs (99k orders, 1M geolocation) verified live: `olist_geolocation_dataset.csv` 58MB now passes.
     - `GET /api/datasets/{id}/history` includes `business_impact`, `GET /dashboard/*` 3 endpoints, `GET /scans/{id}/gate`, `POST /scans/{id}/analyze` history-aware.
-    - Tests: 17 hermetic `pytest` (7 core + 10 Watchtower: IQR, drift thresholds, gate, history, lineage config) + `next build` 6 routes.
+    - Contracts: `GET /api/contracts` + `POST /api/datasets/{id}/contracts/evaluate` for Soda-style declarative checks.
+    - Tests: 30 hermetic `pytest` (7 core + 10 Watchtower + 13 contracts) + `next build` 6 routes.

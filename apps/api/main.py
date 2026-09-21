@@ -14,6 +14,7 @@ from drift import detect_schema_drift, generate_incident_summary, assess_gate
 from quality import run_quality_checks
 from lineage import get_downstream_impact, DEFAULT_LINEAGE_MAP, get_lineage_config, is_demo_lineage, CONFIG_PATH
 from ai import run_ai_analyst
+import quality_contracts as qc_manager
 import json as _json
 from storage_backend import save_file, load_file, STORAGE_DIR
 
@@ -282,6 +283,7 @@ def scan_dataset(
 
     # 2. Deterministic Quality Checks - try comprehensive engine with stored file, fallback to metadata
     quality_ran = False
+    df_quality = None
     try:
         # Locate stored file for current dataset - exact match
         exact_path = os.path.join(STORAGE_DIR, f"{dataset.id}_{dataset.filename}")
@@ -316,6 +318,38 @@ def scan_dataset(
             quality_ran = True
     except Exception:
         quality_ran = False
+
+    # 2b. Quality Contracts evaluation (SodaCL / GE suite inspired) — versioned, explainable
+    try:
+        contracts = qc_manager.get_contracts_for_dataset(db, dataset.name, only_enabled=True)
+        if contracts and df_quality is not None:
+            c_issues = qc_manager.evaluate_contracts(df_quality, dataset.name, contracts)
+            all_issues.extend(c_issues)
+        elif contracts and df_quality is None:
+            # Metadata-only fallback: evaluate row_count contracts via dataset.row_count
+            for c in contracts:
+                if c.contract_type in ("row_count",):
+                    params = c.params or {}
+                    min_rc = params.get("min") or params.get("min_rows")
+                    max_rc = params.get("max") or params.get("max_rows")
+                    if min_rc is not None and dataset.row_count < min_rc:
+                        all_issues.append({
+                            "issue_type": "CONTRACT_BREACH_ROW_COUNT",
+                            "severity": c.severity or "WARNING",
+                            "column_name": None,
+                            "description": f"Row count breach: {dataset.row_count} < min {min_rc} (contract v{c.version} for '{c.dataset_name}').",
+                            "metadata": {"contract_id": c.id, "actual_row_count": dataset.row_count, "min": min_rc, "max": max_rc, "version": c.version},
+                        })
+                    elif max_rc is not None and dataset.row_count > max_rc:
+                        all_issues.append({
+                            "issue_type": "CONTRACT_BREACH_ROW_COUNT",
+                            "severity": c.severity or "WARNING",
+                            "column_name": None,
+                            "description": f"Row count breach: {dataset.row_count} > max {max_rc} (contract v{c.version} for '{c.dataset_name}').",
+                            "metadata": {"contract_id": c.id, "actual_row_count": dataset.row_count, "min": min_rc, "max": max_rc, "version": c.version},
+                        })
+    except Exception:
+        pass  # contract evaluation must not break scan
 
     if not quality_ran:
         # Fallback metadata-only checks (covers cases where file not stored)
@@ -746,6 +780,121 @@ def get_column_lineage(dataset_name: str, column_name: str):
         is_demo=demo,
         demo_note="Static demo lineage from lineage_config.json — replace with OpenLineage/dbt in production."
     )
+
+# ----------------- Quality Contracts (SodaCL / GE suite) -----------------
+@app.post("/api/contracts", response_model=schemas.QualityContractResponse)
+def create_quality_contract(payload: schemas.QualityContractCreate, db: Session = Depends(get_db)):
+    # Validation mirrors Soda threshold semantics
+    ct = payload.contract_type.lower()
+    if ct not in {"completeness","uniqueness","range","regex","row_count","not_null","unique"}:
+        raise HTTPException(status_code=400, detail=f"Invalid contract_type '{payload.contract_type}'. Valid: completeness, uniqueness, range, regex, row_count")
+    if payload.threshold is not None and not (0.0 <= payload.threshold <= 1.0):
+        raise HTTPException(status_code=400, detail="threshold must be between 0.0 and 1.0")
+    if payload.severity not in {"CRITICAL","WARNING","INFO"}:
+        raise HTTPException(status_code=400, detail="severity must be CRITICAL, WARNING or INFO")
+    if ct in {"range","regex"} and not payload.params:
+        raise HTTPException(status_code=400, detail=f"contract_type '{ct}' requires params (e.g., min/max for range, pattern for regex)")
+    # Normalize dataset_name strip
+    if not payload.dataset_name or not payload.dataset_name.strip():
+        raise HTTPException(status_code=400, detail="dataset_name is required")
+    try:
+        contract = qc_manager.create_contract(db, payload.model_dump())
+        return contract
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.get("/api/contracts", response_model=List[schemas.QualityContractResponse])
+def list_quality_contracts(dataset_name: Optional[str] = None, enabled: Optional[bool] = None, db: Session = Depends(get_db)):
+    q = db.query(models.QualityContract)
+    if dataset_name:
+        # Use same matching logic as evaluation for discoverability: filter by exact or prefix
+        # We fetch all and filter via python to keep matching consistent
+        all_c = q.all()
+        matched = [c for c in all_c if qc_manager._contract_matches(dataset_name, c.dataset_name) or c.dataset_name.lower() == dataset_name.lower()]
+        # Also include exact dataset_name contracts
+        if enabled is not None:
+            matched = [c for c in matched if c.enabled == enabled]
+        return sorted(matched, key=lambda x: x.id)
+    if enabled is not None:
+        q = q.filter(models.QualityContract.enabled == enabled)
+    return q.order_by(models.QualityContract.id.asc()).all()
+
+@app.get("/api/contracts/{contract_id}", response_model=schemas.QualityContractResponse)
+def get_quality_contract(contract_id: int, db: Session = Depends(get_db)):
+    c = db.query(models.QualityContract).filter(models.QualityContract.id == contract_id).first()
+    if not c:
+        raise HTTPException(status_code=404, detail="Contract not found")
+    return c
+
+@app.put("/api/contracts/{contract_id}", response_model=schemas.QualityContractResponse)
+def update_quality_contract(contract_id: int, payload: schemas.QualityContractUpdate, db: Session = Depends(get_db)):
+    data = {k: v for k, v in payload.model_dump().items() if v is not None}
+    if "threshold" in data and data["threshold"] is not None and not (0.0 <= data["threshold"] <= 1.0):
+        raise HTTPException(status_code=400, detail="threshold must be between 0.0 and 1.0")
+    if "severity" in data and data["severity"] is not None and data["severity"] not in {"CRITICAL","WARNING","INFO"}:
+        raise HTTPException(status_code=400, detail="severity must be CRITICAL, WARNING or INFO")
+    if "contract_type" in data and data["contract_type"]:
+        ct = data["contract_type"].lower()
+        if ct not in {"completeness","uniqueness","range","regex","row_count","not_null","unique"}:
+            raise HTTPException(status_code=400, detail=f"Invalid contract_type '{ct}'")
+    c = qc_manager.update_contract(db, contract_id, data)
+    if not c:
+        raise HTTPException(status_code=404, detail="Contract not found")
+    return c
+
+@app.delete("/api/contracts/{contract_id}")
+def delete_quality_contract(contract_id: int, db: Session = Depends(get_db)):
+    ok = qc_manager.delete_contract(db, contract_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Contract not found")
+    return {"status": "deleted", "contract_id": contract_id}
+
+@app.get("/api/datasets/{dataset_id}/contracts", response_model=List[schemas.QualityContractResponse])
+def get_dataset_contracts(dataset_id: int, db: Session = Depends(get_db)):
+    ds = db.query(models.Dataset).filter(models.Dataset.id == dataset_id).first()
+    if not ds:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    contracts = qc_manager.get_contracts_for_dataset(db, ds.name, only_enabled=True)
+    return contracts
+
+@app.post("/api/datasets/{dataset_id}/contracts/evaluate")
+def evaluate_dataset_contracts(dataset_id: int, db: Session = Depends(get_db)):
+    ds = db.query(models.Dataset).filter(models.Dataset.id == dataset_id).first()
+    if not ds:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    contracts = qc_manager.get_contracts_for_dataset(db, ds.name, only_enabled=True)
+    if not contracts:
+        return {"dataset_id": dataset_id, "dataset_name": ds.name, "contracts_evaluated": 0, "breaches": []}
+    # Load dfQuality as in scan
+    try:
+        exact_path = os.path.join(STORAGE_DIR, f"{ds.id}_{ds.filename}")
+        stored_path = exact_path if os.path.exists(exact_path) else None
+        if not stored_path:
+            for fname in os.listdir(STORAGE_DIR):
+                if fname.startswith(f"{ds.id}_"):
+                    stored_path = os.path.join(STORAGE_DIR, fname)
+                    break
+        # sample-data fallback
+        if not stored_path and ds.name in ("orders_v1","orders_v2_schema_drift","orders_bad_quality","customers_v1","products_v1"):
+            candidate = os.path.abspath(os.path.join(STORAGE_DIR, "../../sample-data", f"{ds.name}.csv"))
+            alt = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../sample-data", f"{ds.name}.csv"))
+            for p in [candidate, alt]:
+                if os.path.exists(p):
+                    stored_path = p
+                    break
+        if not stored_path or not os.path.exists(stored_path):
+            raise HTTPException(status_code=400, detail="Dataset file not available for contract evaluation")
+        with open(stored_path, "rb") as fh:
+            content = fh.read()
+        df = parse_dataset_content(content, ds.filename or stored_path)
+        breaches = qc_manager.evaluate_contracts(df, ds.name, contracts)
+        return {"dataset_id": dataset_id, "dataset_name": ds.name, "contracts_evaluated": len(contracts), "breaches": breaches}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/audit")
 def get_audit_trail(

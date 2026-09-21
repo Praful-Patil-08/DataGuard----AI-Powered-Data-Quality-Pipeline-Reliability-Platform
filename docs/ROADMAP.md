@@ -15,7 +15,7 @@
 
 ## Next — Master Improvement Plan (18 Phases)
 - **Phase 1 — Quality Rule Engine** ✅ *Done 2026-09-22*: `quality/` package with `QualityRule`/`RuleResult`/`QualityRuleRegistry`/`QualityEngine`, 8 isolated rules, façade `run_quality_checks()` — no breaking change, 17 tests green.
-- **Phase 2 — Quality Contracts**: declarative thresholds per dataset (SodaCL-style), versioned, stored, testable.
+- **Phase 2 — Quality Contracts** ✅ *Done 2026-09-22*: declarative `QualityContract` table (5 types: completeness/uniqueness/range/regex/row_count, params JSON, threshold 0-1, versioned `version+1`, enabled flag, prefix matching `orders`→`orders_v1`), evaluator `quality_contracts.py` (deterministic pandas, evidence `expected vs actual`), API `POST/GET/PUT/DELETE /api/contracts` + `GET /api/datasets/{id}/contracts` + `POST /api/datasets/{id}/contracts/evaluate`, scan-integrated as `CONTRACT_BREACH_*` issues, 13 tests, total 30 green.
 - **Phase 3 — Quality Score**: deterministic 0-100 with dimensions (completeness/validity/uniqueness/consistency/freshness/schema stability).
 - **Phase 4 — Schema Evolution**: rename detection with evidence scoring, historical schema versions.
 - **Phase 5 — Statistical Drift**: PSI/KS/JS per data type, evidence-backed thresholds.

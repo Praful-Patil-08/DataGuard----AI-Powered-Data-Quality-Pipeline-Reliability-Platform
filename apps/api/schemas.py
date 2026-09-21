@@ -171,6 +171,42 @@ class ColumnImpactResponse(BaseModel):
     is_demo: bool = True
     demo_note: str = "Static demo lineage from lineage.py — replace with OpenLineage/dbt in production."
 
+# --- Quality Contract Schemas ---
+class QualityContractCreate(BaseModel):
+    dataset_name: str
+    column_name: Optional[str] = None
+    contract_type: str  # completeness|uniqueness|range|regex|row_count (aliases: not_null, unique)
+    threshold: Optional[float] = None  # 0.0-1.0 validity ratio; None for row_count uses params
+    params: Dict[str, Any] = Field(default_factory=dict)
+    severity: str = "WARNING"  # CRITICAL|WARNING|INFO
+    description: Optional[str] = None
+    enabled: bool = True
+
+class QualityContractUpdate(BaseModel):
+    dataset_name: Optional[str] = None
+    column_name: Optional[str] = None
+    contract_type: Optional[str] = None
+    threshold: Optional[float] = None
+    params: Optional[Dict[str, Any]] = None
+    severity: Optional[str] = None
+    description: Optional[str] = None
+    enabled: Optional[bool] = None
+
+class QualityContractResponse(BaseModel):
+    id: int
+    dataset_name: str
+    column_name: Optional[str] = None
+    contract_type: str
+    threshold: Optional[float] = None
+    params: Dict[str, Any] = Field(default_factory=dict)
+    severity: str
+    description: Optional[str] = None
+    enabled: bool
+    version: int
+    created_at: datetime
+    updated_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
 # --- Health Schema ---
 class HealthResponse(BaseModel):
     status: str

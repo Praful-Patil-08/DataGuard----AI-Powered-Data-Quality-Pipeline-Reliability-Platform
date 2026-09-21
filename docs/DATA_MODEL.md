@@ -44,15 +44,29 @@
 - `incident_severity`: VARCHAR(20) (INFO/WARNING/CRITICAL/PASSED)
 - `started_at`/`completed_at`: TIMESTAMP
 
-### `issues` (populated by `quality/` registry + `drift.py`)
+### `issues` (populated by `quality/` registry + `drift.py` + `quality_contracts.py`)
 - `id`: UUID / Integer (Primary Key)
 - `scan_id`: FK -> `scans.id`
-- `issue_type`: VARCHAR(100) (COLUMN_REMOVED, COLUMN_ADDED, TYPE_CHANGED, NULLABILITY_CHANGED, NULL_RATE_DRIFT, CARDINALITY_DRIFT, NUMERIC_DRIFT, ROW_COUNT_DRIFT, EMPTY_DATASET, PRIMARY_KEY_NULL, DUPLICATE_PRIMARY_KEY, DUPLICATE_ROWS, HIGH_NULL_RATE, NEGATIVE_VALUE_ANOMALY, NUMERIC_ANOMALY, MALFORMED_DATE, CATEGORICAL_INCONSISTENCY, RULE_EXECUTION_ERROR)
+- `issue_type`: VARCHAR(100) (COLUMN_REMOVED, COLUMN_ADDED, TYPE_CHANGED, NULLABILITY_CHANGED, NULL_RATE_DRIFT, CARDINALITY_DRIFT, NUMERIC_DRIFT, ROW_COUNT_DRIFT, EMPTY_DATASET, PRIMARY_KEY_NULL, DUPLICATE_PRIMARY_KEY, DUPLICATE_ROWS, HIGH_NULL_RATE, NEGATIVE_VALUE_ANOMALY, NUMERIC_ANOMALY, MALFORMED_DATE, CATEGORICAL_INCONSISTENCY, RULE_EXECUTION_ERROR, CONTRACT_BREACH_COMPLETENESS, CONTRACT_BREACH_UNIQUENESS, CONTRACT_BREACH_RANGE, CONTRACT_BREACH_REGEX, CONTRACT_BREACH_ROW_COUNT, CONTRACT_UNKNOWN_TYPE, CONTRACT_EVALUATION_ERROR)
 - `severity`: VARCHAR(20) ('CRITICAL', 'WARNING', 'INFO')
 - `column_name`: VARCHAR(255) (Nullable)
 - `description`: TEXT
-- `metadata`: JSONB (per-rule evidence: `null_count`, `negative_count`, `invalid_count`, `inconsistent_variants`, etc.)
-- `quality/` mapping: each `QualityRule` emits `RuleResult` → `to_issue_dict()` → `Issue` row; registry order mirrors legacy `quality.py` for stable snapshots; `contracts.py` supplies `primary_key` to `PrimaryKeyRule`.
+- `metadata`: JSONB (per-rule/contract evidence: `null_count`, `negative_count`, `invalid_count`, `inconsistent_variants`, `expected_*`/`actual_*`, `contract_id`, `version`, etc.)
+- `quality/` mapping: each `QualityRule` emits `RuleResult` → `to_issue_dict()` → `Issue` row; registry order mirrors legacy `quality.py` for stable snapshots; `contracts.py` supplies `primary_key` to `PrimaryKeyRule`; `quality_contracts.py` appends `CONTRACT_BREACH_*` issues during scan.
+
+### `quality_contracts` (SodaCL / GE suite — Phase 2)
+- `id`: UUID / Integer (Primary Key)
+- `dataset_name`: VARCHAR(255) indexed (logical, e.g., `orders` matches `orders_v1` via prefix `orders_`)
+- `column_name`: VARCHAR(255) nullable indexed (None for `row_count` table-level)
+- `contract_type`: VARCHAR(50) indexed (`completeness`/`not_null`→completeness, `uniqueness`/`unique`→uniqueness, `range`, `regex`, `row_count`)
+- `threshold`: FLOAT nullable (0.0-1.0 validity ratio; e.g., `0.99` for ≥99%, `1.0` for strict)
+- `params`: JSONB (`{min,max}` for range/row_count, `{pattern}` for regex, extra)
+- `severity`: VARCHAR(20) (CRITICAL/WARNING/INFO)
+- `description`: TEXT (e.g., `customer_id must not be null ≥99%`)
+- `enabled`: BOOLEAN (default true — disabled contracts skipped in scan, testable)
+- `version`: INTEGER (incremented on `PUT`, `updated_at` tracks recency — versioned, explainable, separate from `issues`)
+- `created_at`/`updated_at`: TIMESTAMP WITH TIME ZONE
+- `quality_contracts.py`: `_contract_matches()` prefix logic, `evaluate_contracts()` deterministic pandas (completeness via null_rate, uniqueness via unique_ratio, range via validity ratio, regex via re, row_count via dataset.row_count), `create/update/delete` CRUD.
 
 ### `ai_analysis` (history-aware, provider-agnostic)
 - `id`: UUID / Integer (Primary Key)

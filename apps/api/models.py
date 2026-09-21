@@ -146,3 +146,26 @@ class Dependency(Base):
     target_asset = Column(String(255), nullable=False, index=True)  # e.g., revenue_model
     relationship_type = Column(String(50), nullable=False)           # DERIVED_BY, DASHBOARD_FEED, etc.
     target_type = Column(String(50), default="SQL_MODEL")            # SQL_MODEL, DASHBOARD
+
+
+class QualityContract(Base):
+    """
+    Declarative data-quality contract — SodaCL / GE expectation inspired.
+    Owns the expectation, not the scan result.
+    Versioned via `version` int, soft history via updated_at.
+    """
+    __tablename__ = "quality_contracts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    dataset_name = Column(String(255), nullable=False, index=True)  # logical name e.g., orders
+    column_name = Column(String(255), nullable=True, index=True)    # None for table-level (row_count)
+    contract_type = Column(String(50), nullable=False, index=True)  # completeness|uniqueness|range|regex|row_count
+    # threshold is completeness/uniqueness/validity ratio 0.0-1.0; for row_count params contains min/max
+    threshold = Column(Float, nullable=True)
+    params = Column(JSON, default=dict)  # extra: {min, max, pattern, etc}
+    severity = Column(String(20), default="WARNING", nullable=False)
+    description = Column(Text, nullable=True)
+    enabled = Column(Boolean, default=True, nullable=False)
+    version = Column(Integer, default=1, nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.datetime.now(datetime.timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.datetime.now(datetime.timezone.utc), onupdate=lambda: datetime.datetime.now(datetime.timezone.utc))

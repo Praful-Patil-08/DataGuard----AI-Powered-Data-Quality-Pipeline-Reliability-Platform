@@ -248,6 +248,39 @@ class LineageTraversalResponse(BaseModel):
     node_count: int
     edge_count: int
 
+# --- Impact Analysis Schemas ---
+class ImpactAssetResponse(BaseModel):
+    target_dataset: str
+    target_column: Optional[str] = None
+    target_type: str
+    job_name: Optional[str] = None
+    relationship: str
+    distance: int
+    source_severity: str
+    propagated_severity: str
+    kpi: str
+    kpi_description: str
+    evidence: str
+
+class ImpactAnalysisResponse(BaseModel):
+    source: Dict[str, Any]
+    max_depth: int
+    impacted_assets: List[ImpactAssetResponse] = []
+    kpi_impact: List[Dict[str, Any]] = []
+    total_assets: int
+    total_kpis: int
+    summary: str
+
+class ScanImpactResponse(BaseModel):
+    scan_id: int
+    dataset: str
+    source_columns: List[str] = []
+    impacted_assets: List[ImpactAssetResponse] = []
+    kpi_impact: List[Dict[str, Any]] = []
+    total_assets: int
+    total_kpis: int
+    summary: str
+
 # --- Quality Contract Schemas ---
 class QualityContractCreate(BaseModel):
     dataset_name: str

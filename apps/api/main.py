@@ -15,6 +15,7 @@ from quality import run_quality_checks
 from quality_score import compute_quality_score
 from lineage import get_downstream_impact, DEFAULT_LINEAGE_MAP, get_lineage_config, is_demo_lineage, CONFIG_PATH
 import lineage_graph
+import impact as impact_manager
 from ai import run_ai_analyst
 import quality_contracts as qc_manager
 import baselines as baseline_manager
@@ -1133,6 +1134,42 @@ def get_column_lineage(dataset_name: str, column_name: str, db: Session = Depend
         is_demo=demo,
         demo_note="Static demo lineage from lineage_config.json — replace with OpenLineage/dbt in production."
     )
+
+# ----------------- Impact Analysis (deterministic downstream) -----------------
+@app.get("/api/impact/{dataset}/{column}", response_model=schemas.ImpactAnalysisResponse)
+def get_column_impact(dataset: str, column: str, severity: str = "CRITICAL", depth: int = 3, db: Session = Depends(get_db)):
+    if severity.upper() not in {"INFO", "WARNING", "CRITICAL"}:
+        raise HTTPException(status_code=400, detail="severity must be INFO, WARNING, CRITICAL")
+    if depth < 1 or depth > 5:
+        raise HTTPException(status_code=400, detail="depth must be 1-5")
+    return impact_manager.analyze_impact(db, dataset, column, source_severity=severity.upper(), max_depth=depth)
+
+@app.get("/api/impact/{dataset}", response_model=schemas.ImpactAnalysisResponse)
+def get_dataset_impact(dataset: str, severity: str = "CRITICAL", depth: int = 3, db: Session = Depends(get_db)):
+    if severity.upper() not in {"INFO", "WARNING", "CRITICAL"}:
+        raise HTTPException(status_code=400, detail="severity must be INFO, WARNING, CRITICAL")
+    if depth < 1 or depth > 5:
+        raise HTTPException(status_code=400, detail="depth must be 1-5")
+    return impact_manager.analyze_impact(db, dataset, None, source_severity=severity.upper(), max_depth=depth)
+
+@app.get("/api/scans/{scan_id}/impact", response_model=schemas.ScanImpactResponse)
+def get_scan_impact(scan_id: int, depth: int = 3, db: Session = Depends(get_db)):
+    if depth < 1 or depth > 5:
+        raise HTTPException(status_code=400, detail="depth must be 1-5")
+    try:
+        return impact_manager.analyze_scan_impact(db, scan_id, max_depth=depth)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+@app.get("/api/incidents/{incident_id}/impact", response_model=schemas.ScanImpactResponse)
+def get_incident_impact(incident_id: int, depth: int = 3, db: Session = Depends(get_db)):
+    inc = db.query(models.Incident).filter(models.Incident.id == incident_id).first()
+    if not inc:
+        raise HTTPException(status_code=404, detail="Incident not found")
+    try:
+        return impact_manager.analyze_scan_impact(db, inc.scan_id, max_depth=depth)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 # ----------------- Quality Contracts (SodaCL / GE suite) -----------------

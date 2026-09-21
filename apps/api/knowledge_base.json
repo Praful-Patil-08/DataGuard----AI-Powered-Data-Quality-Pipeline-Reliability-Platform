@@ -1,0 +1,74 @@
+[
+  {
+    "id": "kb_orders_customer_id_null",
+    "dataset": "orders",
+    "column": "customer_id",
+    "issue_type": "PRIMARY_KEY_NULL",
+    "title": "Runbook: customer_id null handling",
+    "content": "Upstream customer ingestion pipeline degraded. Check source system completeness for customer_id, validate joins to customer_360_view, compare current null_rate to baseline, reprocess affected records if appropriate. Notify data producer.",
+    "tags": ["customer_id", "completeness", "ingestion"]
+  },
+  {
+    "id": "kb_orders_order_value_removed",
+    "dataset": "orders",
+    "column": "order_value",
+    "issue_type": "COLUMN_REMOVED",
+    "title": "Runbook: order_value removed (rename to order_amount)",
+    "content": "Schema evolution: order_value removed, order_amount added. Likely rename. Map order_amount to order_value in staging layer (revenue_model), apply casting if type changed, notify downstream Executive Revenue Dashboard consumers. Historical: 2 prior healthy scans suggest recent upstream change.",
+    "tags": ["order_value", "order_amount", "schema", "rename"]
+  },
+  {
+    "id": "kb_orders_amount_negative",
+    "dataset": "orders",
+    "column": "amount",
+    "issue_type": "NEGATIVE_VALUE_ANOMALY",
+    "title": "Runbook: Negative amount anomaly",
+    "content": "Financial column amount contains negative values. Check upstream pricing feed for refunds vs data error. Validate range contract (amount >=0). Quarantine records with amount <0 and alert source system maintainers.",
+    "tags": ["amount", "negative", "range"]
+  },
+  {
+    "id": "kb_orders_discount_type",
+    "dataset": "orders",
+    "column": "discount",
+    "issue_type": "TYPE_CHANGED",
+    "title": "Runbook: discount type FLOAT→STRING",
+    "content": "Datatype regression: discount FLOAT → STRING (e.g., '5%' vs 0.05). Apply casting transformation: strip '%' and divide by 100. Update downstream margin_analysis_model. Check source export format change.",
+    "tags": ["discount", "type", "casting"]
+  },
+  {
+    "id": "kb_generic_quality",
+    "dataset": "*",
+    "column": "*",
+    "issue_type": "HIGH_NULL_RATE",
+    "title": "Runbook: High null rate",
+    "content": "High null rate detected. Investigate source completeness, check ingestion logs for dropped records, compare row_count drift, and validate contracts. Consider backfill if historical null_rate is stable.",
+    "tags": ["null", "completeness"]
+  },
+  {
+    "id": "kb_orders_row_count_drop",
+    "dataset": "orders",
+    "column": null,
+    "issue_type": "ROW_COUNT_DRIFT",
+    "title": "Runbook: Row count drop",
+    "content": "Row count dropped significantly. Check upstream job run logs for partial failure, verify source row count, check for filtered records due to quality checks. Impact: downstream revenue underreported.",
+    "tags": ["row_count", "drift"]
+  },
+  {
+    "id": "kb_dataset_orders_docs",
+    "dataset": "orders",
+    "column": null,
+    "issue_type": null,
+    "title": "Dataset: orders documentation",
+    "content": "Orders fact table: order_id (PK, entity), customer_id (FK to customers), order_value (revenue), discount (FLOAT), order_date (DATE). Downstream: revenue_model, monthly_revenue, customer_ltv, Executive Revenue Dashboard. Owner: data-eng@dataguard. SLA: <1% null on customer_id, 100% unique order_id.",
+    "tags": ["documentation", "orders"]
+  },
+  {
+    "id": "kb_business_revenue",
+    "dataset": "*",
+    "column": "order_value",
+    "issue_type": null,
+    "title": "Business: Revenue reporting",
+    "content": "Revenue reporting KPI: Executive Revenue Dashboard, monthly_revenue, customer LTV. Degraded order_value directly impacts finance close and executive decisions. Escalate to finance-data-oncall if CRITICAL.",
+    "tags": ["revenue", "business"]
+  }
+]

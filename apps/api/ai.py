@@ -197,6 +197,14 @@ def generate_fallback_from_context(context: Dict[str, Any]) -> Dict[str, Any]:
     impact = context.get("impact")
     if impact and impact.get("summary"):
         base["business_impact"] += f" Impact: {impact['summary']}"
+    # Scoped RAG: enrich recommended_action with retrieved runbooks
+    retrieved = context.get("retrieved_docs", [])
+    if retrieved:
+        # Add top retrieved doc to recommended_action (scoped, not generic)
+        top = retrieved[0]
+        base["recommended_action"] += f" Referenced runbook: {top.get('title', '')} — {top.get('content','')[:200]}"
+        # Also add to root_cause as evidence
+        base["root_cause"] += f" Retrieved docs: {', '.join(d.get('id','') for d in retrieved[:2])}."
     # Ensure grounded: affected_assets must be subset of downstream
     if downstream:
         # Filter to downstream to avoid hallucination

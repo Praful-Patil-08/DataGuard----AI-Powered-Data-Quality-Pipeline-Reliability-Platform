@@ -346,6 +346,19 @@ class BaselineResponse(BaseModel):
     updated_at: datetime
     model_config = ConfigDict(from_attributes=True)
 
+# --- Audit Schemas ---
+class AuditLogResponse(BaseModel):
+    id: int
+    action: str
+    actor: str
+    target_type: str
+    target_id: Optional[str] = None
+    previous_state: Optional[Dict[str, Any]] = None
+    new_state: Optional[Dict[str, Any]] = None
+    reason: Optional[str] = None
+    created_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
 
 # --- Health Schema ---
 class HealthResponse(BaseModel):

@@ -286,3 +286,29 @@ class LineageEdge(Base):
     created_by = Column(String(255), nullable=True, default="system")
     created_at = Column(DateTime, default=lambda: datetime.datetime.now(datetime.timezone.utc))
     updated_at = Column(DateTime, default=lambda: datetime.datetime.now(datetime.timezone.utc), onupdate=lambda: datetime.datetime.now(datetime.timezone.utc))
+
+
+class AuditLog(Base):
+    """
+    Audit trail — who, what, when, why, previous state, new state.
+
+    Every important action is traceable:
+    - baseline changes
+    - contract changes (create/update/delete)
+    - remediation approvals/rejections
+    - incident status changes
+    - AI analysis
+    - lineage edge changes
+    - scan creation
+    """
+    __tablename__ = "audit_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    action = Column(String(100), nullable=False, index=True)  # e.g., baseline.create, contract.update, remediation.approve
+    actor = Column(String(255), nullable=False, default="system", index=True)  # who
+    target_type = Column(String(50), nullable=False, index=True)  # baseline, contract, remediation, incident, ai_analysis, scan, lineage_edge
+    target_id = Column(String(100), nullable=True, index=True)  # id as string (supports composite)
+    previous_state = Column(JSON, nullable=True)
+    new_state = Column(JSON, nullable=True)
+    reason = Column(Text, nullable=True)  # why (notes)
+    created_at = Column(DateTime, default=lambda: datetime.datetime.now(datetime.timezone.utc), index=True)

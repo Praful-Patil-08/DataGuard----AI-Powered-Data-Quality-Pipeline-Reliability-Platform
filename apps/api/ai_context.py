@@ -20,6 +20,7 @@ import models
 from lineage import get_downstream_impact
 from drift import generate_incident_summary
 import json as _json
+import rag as rag_store
 
 # Sanitization for prompt injection: allow only alphanumeric, _, -, .
 _SANITIZE_RE = re.compile(r"[^a-zA-Z0-9_\-\.\s]")
@@ -157,6 +158,30 @@ def build_ai_context(db: Session, scan_id: int, max_issues: int = 20, max_histor
         }
     except Exception:
         impact_summary = None
+    # Scoped RAG retrieval (only relevant docs for this scan)
+    retrieved_docs = []
+    try:
+        # Use sanitized dataset name for scoped retrieval
+        safe_dataset = _sanitize_dataset_name(dataset.name if dataset else "unknown")
+        # Sanitize issues for RAG query
+        safe_issues = []
+        for iss in issues_data:
+            safe_iss = {**iss}
+            if safe_iss.get("column_name"):
+                safe_iss["column_name"] = _sanitize_column(safe_iss["column_name"])
+            safe_issues.append(safe_iss)
+        retrieved_docs = rag_store.retrieve_for_scan(
+            safe_dataset,
+            safe_issues,
+            downstream_assets,
+            k=3
+        )
+        # Sanitize retrieved content
+        for doc in retrieved_docs:
+            doc["content"] = _sanitize(doc.get("content", ""), max_len=500)
+            doc["title"] = _sanitize(doc.get("title", ""), max_len=100)
+    except Exception:
+        retrieved_docs = []
     # Dataset metadata (no raw data)
     dataset_metadata = None
     if dataset:
@@ -198,12 +223,14 @@ def build_ai_context(db: Session, scan_id: int, max_issues: int = 20, max_histor
         "downstream_assets": downstream_assets[:10],
         "lineage_details": lineage_details[:10],
         "impact": impact_summary,
+        "retrieved_docs": retrieved_docs,
         # Hardening: explicitly state what AI must NOT do
         "constraints": {
             "no_raw_data": True,
             "must_ground_in_issues": True,
             "must_not_modify_data": True,
             "must_require_human_approval_for_critical": True,
+            "scoped_rag_only": True,
         }
     }
     return context

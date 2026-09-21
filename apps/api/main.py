@@ -23,6 +23,8 @@ import baselines as baseline_manager
 import incidents as incident_manager
 import reliability as reliability_manager
 import anomaly as anomaly_manager
+import rag as rag_store
+import audit as audit_manager
 import json as _json
 from storage_backend import save_file, load_file, STORAGE_DIR
 
@@ -1523,6 +1525,38 @@ def get_scan_anomalies(scan_id: int, window: int = 10, db: Session = Depends(get
         raise HTTPException(status_code=400, detail="window must be 3-20")
     anomalies = anomaly_manager.detect_anomalies_for_scan(db, scan_id, window=window)
     return {"scan_id": scan_id, "dataset": scan.dataset.name if scan.dataset else "unknown", "anomalies": anomalies, "anomaly_count": len(anomalies), "window": window}
+
+# ----------------- RAG (scoped, justified — Phase 13) -----------------
+@app.post("/api/rag/retrieve")
+def rag_retrieve(
+    dataset: Optional[str] = None,
+    column: Optional[str] = None,
+    issue_type: Optional[str] = None,
+    query: Optional[str] = None,
+    k: int = 3,
+    db: Session = Depends(get_db)
+):
+    # Scoped retrieval: only returns docs matching dataset/column/issue_type
+    if k < 1 or k > 10:
+        raise HTTPException(status_code=400, detail="k must be 1-10")
+    issue_types = [issue_type] if issue_type else []
+    results = rag_store.retrieve(dataset=dataset, column=column, issue_types=issue_types, query=query, k=k)
+    return {"query": {"dataset": dataset, "column": column, "issue_type": issue_type, "query": query}, "results": results, "count": len(results)}
+
+@app.get("/api/rag/docs")
+def rag_list_docs():
+    docs = rag_store._load_kb()
+    return {"count": len(docs), "docs": docs}
+
+@app.get("/api/rag/scan/{scan_id}")
+def rag_for_scan(scan_id: int, k: int = 3, db: Session = Depends(get_db)):
+    scan = db.query(models.Scan).filter(models.Scan.id == scan_id).first()
+    if not scan:
+        raise HTTPException(status_code=404, detail="Scan not found")
+    issues = db.query(models.Issue).filter(models.Issue.scan_id == scan_id).all()
+    issues_data = [{"issue_type": i.issue_type, "severity": i.severity, "column_name": i.column_name} for i in issues]
+    docs = rag_store.retrieve_for_scan(scan.dataset.name if scan.dataset else "unknown", issues_data, k=k)
+    return {"scan_id": scan_id, "dataset": scan.dataset.name if scan.dataset else "unknown", "results": docs, "count": len(docs)}
 
 @app.get("/api/audit")
 def get_audit_trail(

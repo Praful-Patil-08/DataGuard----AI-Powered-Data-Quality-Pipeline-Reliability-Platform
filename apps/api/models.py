@@ -80,6 +80,9 @@ class Scan(Base):
     critical_count = Column(Integer, default=0)
     incident_summary = Column(Text, nullable=True)
     incident_severity = Column(String(20), nullable=True)  # INFO/WARNING/CRITICAL/PASSED
+    # Phase 3: deterministic quality score 0-100 with explainable dimensions
+    quality_score = Column(Float, nullable=True, default=100.0)
+    quality_dimensions = Column(JSON, default=dict)
     started_at = Column(DateTime, default=datetime.datetime.utcnow)
     completed_at = Column(DateTime, default=datetime.datetime.utcnow)
 

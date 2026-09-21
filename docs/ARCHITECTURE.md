@@ -52,12 +52,18 @@
      - Dataset matching uses prefix logic (`orders` matches `orders_v1`/`orders_bad_quality`) mirroring `contracts.py`; evaluation is deterministic pandas with evidence (`expected vs actual`, `null_count`, `invalid_samples`, `version`).
      - API: `POST/GET/PUT/DELETE /api/contracts`, `GET /api/datasets/{id}/contracts`, `POST /api/datasets/{id}/contracts/evaluate`; integrated into `scan_dataset:322` — contracts evaluated against `df_quality` and appended to `all_issues` as `CONTRACT_BREACH_*` (explainable, testable).
    - `lineage.py`: Dependency graph mapping (Column -> SQL Model -> Dashboard).
+   - `quality_score.py` — **Phase 3** (OpenMetadata/Elementary dimensions):
+     - 7 dimensions `completeness, uniqueness, validity, consistency, schema_stability, distribution_stability, freshness` weighted `0.20/0.20/0.20/0.10/0.15/0.10/0.05` → weighted sum 0-100, integer, clamped.
+     - Penalty deterministic: `CRITICAL -25`, `WARNING -10` per issue in dimension, plus freshness from `max date` recency (`≤7d 100, ≤30d 95, ≤90d 80, >90d 60`).
+     - Mapping `issue_type→dimension` (single assignment to avoid double penalty), explainable `evidence` per dimension, overall `summary` with weakest dimension hint.
+     - Persisted on `scans.quality_score`/`quality_dimensions` (JSON) via `compute_quality_score()` during scan; endpoint `GET /api/scans/{id}/score` recomputes for legacy scans; history includes `quality_score`.
+     - Study: OpenMetadata data quality dimensions + Elementary reliability trends → unified score.
    - `contracts.py` + `dataset_contracts.json`: Table-type & PK contracts (entity/fact/event) eliminating heuristic `endswith _id` false positives.
    - `ai.py` + `ai_provider.py`: OpenAI/Gemini/Mock analyst with structured `AIAnalysisOutput`.
-   - Database layer: SQLAlchemy 2.0 → PostgreSQL (SQLite fallback for hermetic tests); `quality_contracts` created via `create_all` (no Alembic, safe additive).
+   - Database layer: SQLAlchemy 2.0 → PostgreSQL (SQLite fallback for hermetic tests); `quality_contracts` + `scans.quality_score/dimensions` via `create_all` + `run_migrations()` additive `ALTER TABLE`.
 
 3. **Storage (`database/` + `storage_backend.py`)**:
-    - PostgreSQL with `run_migrations()` additive `ALTER TABLE` on startup (no Alembic, safe for SQLite/PG): `scans.baseline_dataset_id/incident_*`, `schema_columns.null_rate/.../top_values`, `ai_analysis.technical_impact/business_impact`.
+    - PostgreSQL with `run_migrations()` additive `ALTER TABLE` on startup (no Alembic, safe for SQLite/PG): `scans.baseline_dataset_id/incident_*/quality_score/quality_dimensions`, `schema_columns.null_rate/.../top_values`, `ai_analysis.technical_impact/business_impact`.
     - `storage_backend.py` abstraction: `local` `storage/{id}_{filename}` → `s3://` if `STORAGE_BACKEND=s3` + `S3_BUCKET` (boto3 optional fallback). Upload limit 100MB (handles Olist geolocation 58MB).
 
 4. **AI (`ai.py` + `ai_provider.py`)**:
@@ -70,6 +76,6 @@
 
 6. **Integration & Demo Assets**:
     - Real Olist 9 CSVs (99k orders, 1M geolocation) verified live: `olist_geolocation_dataset.csv` 58MB now passes.
-    - `GET /api/datasets/{id}/history` includes `business_impact`, `GET /dashboard/*` 3 endpoints, `GET /scans/{id}/gate`, `POST /scans/{id}/analyze` history-aware.
+    - `GET /api/datasets/{id}/history` now includes `quality_score`/`quality_dimensions` + `business_impact`, `GET /dashboard/*` 3 endpoints, `GET /scans/{id}/gate`, `GET /scans/{id}/score` (dimensions + summary), `POST /scans/{id}/analyze` history-aware.
     - Contracts: `GET /api/contracts` + `POST /api/datasets/{id}/contracts/evaluate` for Soda-style declarative checks.
-    - Tests: 30 hermetic `pytest` (7 core + 10 Watchtower + 13 contracts) + `next build` 6 routes.
+    - Tests: 40 hermetic `pytest` (7 core + 10 Watchtower + 13 contracts + 10 quality_score) + `next build` 6 routes.

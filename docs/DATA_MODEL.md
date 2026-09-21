@@ -32,7 +32,7 @@
 - `outlier_count`: INTEGER, `outlier_rate`: FLOAT
 - `top_values`: JSONB `[{value,count,rate}]`
 
-### `scans` (with incident + gate)
+### `scans` (with incident + gate + quality score)
 - `id`: UUID / Integer (Primary Key)
 - `dataset_id`: FK -> `datasets.id`
 - `baseline_dataset_id`: FK -> `datasets.id` nullable (explicit baseline, replaces fuzzy `like`)
@@ -42,6 +42,8 @@
 - `critical_count`: INTEGER
 - `incident_summary`: TEXT (Watchtower `_incident_report` human-friendly)
 - `incident_severity`: VARCHAR(20) (INFO/WARNING/CRITICAL/PASSED)
+- `quality_score`: FLOAT nullable (0-100 deterministic weighted sum, default 100.0)
+- `quality_dimensions`: JSONB (`{completeness:{score,weight,critical,warning,evidence,issues}, ... freshness}` with weights `0.20/0.20/0.20/0.10/0.15/0.10/0.05`)
 - `started_at`/`completed_at`: TIMESTAMP
 
 ### `issues` (populated by `quality/` registry + `drift.py` + `quality_contracts.py`)

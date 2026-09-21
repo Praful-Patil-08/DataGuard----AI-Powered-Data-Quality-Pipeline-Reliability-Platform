@@ -12,6 +12,7 @@ import schemas
 from scanner import parse_dataset_content, profile_dataframe
 from drift import detect_schema_drift, generate_incident_summary, assess_gate
 from quality import run_quality_checks
+from quality_score import compute_quality_score
 from lineage import get_downstream_impact, DEFAULT_LINEAGE_MAP, get_lineage_config, is_demo_lineage, CONFIG_PATH
 from ai import run_ai_analyst
 import quality_contracts as qc_manager
@@ -392,6 +393,15 @@ def scan_dataset(
         elif warning_count > 0:
             incident_severity = "WARNING"
 
+    # Phase 3: deterministic quality score with explainable dimensions
+    try:
+        score_data = compute_quality_score(all_issues, df_quality)
+        quality_score_val = float(score_data["score"])
+        quality_dimensions_val = score_data["dimensions"]
+    except Exception:
+        quality_score_val = 100.0 if not all_issues else max(0, 100 - sum(25 if i["severity"]=="CRITICAL" else 10 for i in all_issues))
+        quality_dimensions_val = {}
+
     scan = models.Scan(
         dataset_id=dataset_id,
         baseline_dataset_id=baseline_dataset.id if baseline_dataset else None,
@@ -401,6 +411,8 @@ def scan_dataset(
         critical_count=critical_count,
         incident_summary=incident_summary,
         incident_severity=incident_severity,
+        quality_score=quality_score_val,
+        quality_dimensions=quality_dimensions_val,
         started_at=datetime.datetime.now(datetime.timezone.utc),
         completed_at=datetime.datetime.now(datetime.timezone.utc)
     )
@@ -471,6 +483,45 @@ def get_scan_gate(
     )
     return gate
 
+@app.get("/api/scans/{scan_id}/score", response_model=schemas.QualityScoreResponse)
+def get_scan_score(scan_id: int, db: Session = Depends(get_db)):
+    scan = db.query(models.Scan).filter(models.Scan.id == scan_id).first()
+    if not scan:
+        raise HTTPException(status_code=404, detail="Scan not found")
+    # If score not computed (legacy scan), compute on fly from issues
+    if scan.quality_score is not None and scan.quality_dimensions:
+        dimensions = scan.quality_dimensions
+        score = int(round(float(scan.quality_score)))
+        # summary recompute for consistency
+        from quality_score import compute_quality_score as _cqs
+        issues = db.query(models.Issue).filter(models.Issue.scan_id == scan_id).all()
+        issues_data = [{"issue_type": i.issue_type, "severity": i.severity, "metadata": i.issue_metadata or {}} for i in issues]
+        # Try to load df for freshness dimension
+        try:
+            # reuse df if available
+            from storage_backend import STORAGE_DIR
+            import os
+            exact_path = os.path.join(STORAGE_DIR, f"{scan.dataset.id}_{scan.dataset.filename}")
+            stored_path = exact_path if os.path.exists(exact_path) else None
+            if stored_path and os.path.exists(stored_path):
+                from scanner import parse_dataset_content as _parse
+                with open(stored_path, "rb") as fh:
+                    content = fh.read()
+                df = _parse(content, scan.dataset.filename or stored_path)
+                recomputed = _cqs(issues_data, df)
+            else:
+                recomputed = _cqs(issues_data, None)
+            summary = recomputed["summary"]
+        except Exception:
+            summary = f"Quality score {score}/100 — {'critical' if score <50 else 'degraded' if score <75 else 'good' if score <90 else 'excellent'}."
+        return {"score": score, "dimensions": dimensions, "summary": summary}
+    # Legacy fallback: compute from issues
+    issues = db.query(models.Issue).filter(models.Issue.scan_id == scan_id).all()
+    issues_data = [{"issue_type": i.issue_type, "severity": i.severity, "metadata": i.issue_metadata or {}} for i in issues]
+    from quality_score import compute_quality_score as _cqs
+    result = _cqs(issues_data, None)
+    return result
+
 @app.get("/api/datasets/{dataset_id}/scans", response_model=List[schemas.ScanResponse])
 def list_dataset_scans(dataset_id: int, db: Session = Depends(get_db)):
     ds = db.query(models.Dataset).filter(models.Dataset.id == dataset_id).first()
@@ -496,6 +547,8 @@ def get_dataset_history(dataset_id: int, db: Session = Depends(get_db)):
             "warning_count": s.warning_count,
             "healthy_count": s.healthy_count,
             "incident_summary": s.incident_summary,
+            "quality_score": float(s.quality_score) if s.quality_score is not None else None,
+            "quality_dimensions": s.quality_dimensions or {},
             "business_impact": ai.business_impact if ai and ai.business_impact else None,
             "technical_impact": ai.technical_impact if ai and ai.technical_impact else None,
         })

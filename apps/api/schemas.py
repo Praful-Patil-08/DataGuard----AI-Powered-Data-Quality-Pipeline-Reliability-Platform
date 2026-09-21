@@ -111,12 +111,19 @@ class ScanResponse(BaseModel):
     critical_count: int
     incident_summary: Optional[str] = None
     incident_severity: Optional[str] = None
+    quality_score: Optional[float] = None
+    quality_dimensions: Optional[Dict[str, Any]] = None
     started_at: datetime
     completed_at: datetime
     issues: List[IssueResponse] = []
     ai_analyses: List[AIAnalysisResponse] = []
     remediations: List[RemediationResponse] = []
     model_config = ConfigDict(from_attributes=True)
+
+class QualityScoreResponse(BaseModel):
+    score: int
+    summary: str
+    dimensions: Dict[str, Any]
 
 class GateResponse(BaseModel):
     passed: bool

@@ -46,6 +46,11 @@ def run_migrations():
             stmts.append("ALTER TABLE ai_analysis ADD COLUMN technical_impact TEXT")
         if "business_impact" not in cols3:
             stmts.append("ALTER TABLE ai_analysis ADD COLUMN business_impact TEXT")
+        # scans quality score (Phase 3)
+        if "quality_score" not in cols:
+            stmts.append("ALTER TABLE scans ADD COLUMN quality_score FLOAT DEFAULT 100.0")
+        if "quality_dimensions" not in cols:
+            stmts.append("ALTER TABLE scans ADD COLUMN quality_dimensions JSON DEFAULT '{}'")
         for stmt in stmts:
             try:
                 with engine.begin() as conn:

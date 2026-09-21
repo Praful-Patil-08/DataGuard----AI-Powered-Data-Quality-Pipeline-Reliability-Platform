@@ -172,3 +172,38 @@ class QualityContract(Base):
     version = Column(Integer, default=1, nullable=False)
     created_at = Column(DateTime, default=lambda: datetime.datetime.now(datetime.timezone.utc))
     updated_at = Column(DateTime, default=lambda: datetime.datetime.now(datetime.timezone.utc), onupdate=lambda: datetime.datetime.now(datetime.timezone.utc))
+
+
+class Baseline(Base):
+    """
+    Baseline snapshot — explicit, versioned, never silent.
+
+    Represents a dataset's known-good state:
+    - logical dataset_name (e.g., orders)
+    - physical baseline_dataset_id + baseline_schema_id + fingerprint
+    - profiling snapshot (row_count, column_count, schema columns via FK)
+    - quality metrics snapshot (quality_score at creation time via latest scan, if any)
+    - distribution snapshot (via schema columns stats)
+    - timestamp/version, is_active (only one active per logical dataset)
+
+    Never silently updated after scan — must be explicitly created/activated.
+    """
+    __tablename__ = "baselines"
+
+    id = Column(Integer, primary_key=True, index=True)
+    dataset_name = Column(String(255), nullable=False, index=True)  # logical name
+    baseline_dataset_id = Column(Integer, ForeignKey("datasets.id"), nullable=False, index=True)
+    baseline_schema_id = Column(Integer, ForeignKey("schemas.id"), nullable=True, index=True)
+    fingerprint = Column(String(64), nullable=False, index=True)
+    row_count = Column(Integer, default=0)
+    column_count = Column(Integer, default=0)
+    quality_score = Column(Float, nullable=True)  # snapshot at creation time
+    version = Column(Integer, default=1, nullable=False)
+    is_active = Column(Boolean, default=True, nullable=False, index=True)
+    description = Column(Text, nullable=True)
+    created_by = Column(String(255), nullable=True, default="system")
+    created_at = Column(DateTime, default=lambda: datetime.datetime.now(datetime.timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.datetime.now(datetime.timezone.utc), onupdate=lambda: datetime.datetime.now(datetime.timezone.utc))
+
+    baseline_dataset = relationship("Dataset", foreign_keys=[baseline_dataset_id])
+    baseline_schema = relationship("SchemaRecord", foreign_keys=[baseline_schema_id])

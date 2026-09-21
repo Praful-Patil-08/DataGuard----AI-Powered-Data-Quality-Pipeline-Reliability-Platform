@@ -16,6 +16,7 @@ from quality_score import compute_quality_score
 from lineage import get_downstream_impact, DEFAULT_LINEAGE_MAP, get_lineage_config, is_demo_lineage, CONFIG_PATH
 from ai import run_ai_analyst
 import quality_contracts as qc_manager
+import baselines as baseline_manager
 import json as _json
 from storage_backend import save_file, load_file, STORAGE_DIR
 
@@ -360,7 +361,7 @@ def scan_dataset(
         "top_values": c.top_values or [],
     } for c in current_schema.columns]
 
-    # Look for baseline schema
+    # Look for baseline schema — explicit Baseline model first, never silent
     baseline_schema = None
     baseline_dataset = None
     if baseline_dataset_id:
@@ -369,17 +370,31 @@ def scan_dataset(
         ).order_by(desc(models.SchemaRecord.created_at)).first()
         baseline_dataset = db.query(models.Dataset).filter(models.Dataset.id == baseline_dataset_id).first()
     else:
-        # Check if there is an earlier dataset with the same name or prefix
-        prefix = dataset.name.split("_v")[0]
-        earlier_ds = db.query(models.Dataset).filter(
-            models.Dataset.id != dataset_id,
-            models.Dataset.name.like(f"{prefix}%")
-        ).order_by(models.Dataset.created_at.asc()).first()
-        if earlier_ds:
-            baseline_schema = db.query(models.SchemaRecord).filter(
-                models.SchemaRecord.dataset_id == earlier_ds.id
-            ).order_by(desc(models.SchemaRecord.created_at)).first()
-            baseline_dataset = earlier_ds
+        # First check active Baseline for this logical dataset (explicit, versioned)
+        try:
+            active = baseline_manager.get_active_baseline(db, dataset.name)
+            if active and active.baseline_dataset_id != dataset_id:
+                baseline_dataset = db.query(models.Dataset).filter(models.Dataset.id == active.baseline_dataset_id).first()
+                baseline_schema = db.query(models.SchemaRecord).filter(
+                    models.SchemaRecord.dataset_id == active.baseline_dataset_id
+                ).order_by(desc(models.SchemaRecord.created_at)).first()
+                # If active baseline points to missing schema, fallback to prefix search
+                if not baseline_schema:
+                    baseline_dataset = None
+        except Exception:
+            pass
+        if not baseline_schema:
+            # Check if there is an earlier dataset with the same name or prefix
+            prefix = dataset.name.split("_v")[0]
+            earlier_ds = db.query(models.Dataset).filter(
+                models.Dataset.id != dataset_id,
+                models.Dataset.name.like(f"{prefix}%")
+            ).order_by(models.Dataset.created_at.asc()).first()
+            if earlier_ds:
+                baseline_schema = db.query(models.SchemaRecord).filter(
+                    models.SchemaRecord.dataset_id == earlier_ds.id
+                ).order_by(desc(models.SchemaRecord.created_at)).first()
+                baseline_dataset = earlier_ds
 
     # Preload DataFrames for statistical drift (PSI/KS/JSD) — requires raw data
     df_current = None
@@ -1130,6 +1145,101 @@ def evaluate_dataset_contracts(dataset_id: int, db: Session = Depends(get_db)):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+# ----------------- Baselines (explicit, versioned, never silent) -----------------
+@app.post("/api/baselines", response_model=schemas.BaselineResponse)
+def create_baseline(payload: schemas.BaselineCreate, db: Session = Depends(get_db)):
+    try:
+        # Resolve logical name
+        if payload.dataset_name:
+            logical = payload.dataset_name
+        else:
+            ds = db.query(models.Dataset).filter(models.Dataset.id == payload.baseline_dataset_id).first()
+            if not ds:
+                raise HTTPException(status_code=404, detail="Dataset not found")
+            logical = ds.name
+        baseline = baseline_manager.create_baseline(
+            db,
+            dataset_name=logical,
+            baseline_dataset_id=payload.baseline_dataset_id,
+            description=payload.description,
+            created_by=payload.created_by or "system",
+            set_active=payload.set_active,
+        )
+        return baseline
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.get("/api/baselines", response_model=List[schemas.BaselineResponse])
+def list_baselines(dataset_name: Optional[str] = None, active_only: bool = False, db: Session = Depends(get_db)):
+    include_inactive = not active_only
+    if dataset_name:
+        baselines = baseline_manager.list_baselines(db, dataset_name, include_inactive=include_inactive)
+    else:
+        baselines = baseline_manager.list_baselines(db, None, include_inactive=include_inactive)
+    return baselines
+
+@app.get("/api/baselines/{baseline_id}", response_model=schemas.BaselineResponse)
+def get_baseline(baseline_id: int, db: Session = Depends(get_db)):
+    b = db.query(models.Baseline).filter(models.Baseline.id == baseline_id).first()
+    if not b:
+        raise HTTPException(status_code=404, detail="Baseline not found")
+    return b
+
+@app.put("/api/baselines/{baseline_id}/activate", response_model=schemas.BaselineResponse)
+def activate_baseline_endpoint(baseline_id: int, db: Session = Depends(get_db)):
+    b = baseline_manager.activate_baseline(db, baseline_id)
+    if not b:
+        raise HTTPException(status_code=404, detail="Baseline not found")
+    return b
+
+@app.put("/api/baselines/{baseline_id}", response_model=schemas.BaselineResponse)
+def update_baseline(baseline_id: int, payload: schemas.BaselineUpdate, db: Session = Depends(get_db)):
+    b = db.query(models.Baseline).filter(models.Baseline.id == baseline_id).first()
+    if not b:
+        raise HTTPException(status_code=404, detail="Baseline not found")
+    if payload.description is not None:
+        b.description = payload.description
+    if payload.is_active is not None:
+        if payload.is_active:
+            # activate
+            b = baseline_manager.activate_baseline(db, baseline_id)
+        else:
+            b = baseline_manager.deactivate_baseline(db, baseline_id)
+        return b
+    db.commit()
+    db.refresh(b)
+    return b
+
+@app.delete("/api/baselines/{baseline_id}")
+def delete_baseline_endpoint(baseline_id: int, db: Session = Depends(get_db)):
+    ok = baseline_manager.delete_baseline(db, baseline_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Baseline not found")
+    return {"status": "deleted", "baseline_id": baseline_id}
+
+@app.get("/api/datasets/{dataset_id}/baselines", response_model=List[schemas.BaselineResponse])
+def get_dataset_baselines(dataset_id: int, db: Session = Depends(get_db)):
+    ds = db.query(models.Dataset).filter(models.Dataset.id == dataset_id).first()
+    if not ds:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    baselines = baseline_manager.list_baselines(db, ds.name, include_inactive=True)
+    return baselines
+
+@app.get("/api/baselines/{baseline_id}/compare/{dataset_id}")
+def compare_baseline_to_dataset(baseline_id: int, dataset_id: int, db: Session = Depends(get_db)):
+    b = db.query(models.Baseline).filter(models.Baseline.id == baseline_id).first()
+    if not b:
+        raise HTTPException(status_code=404, detail="Baseline not found")
+    ds = db.query(models.Dataset).filter(models.Dataset.id == dataset_id).first()
+    if not ds:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    # Use baseline's dataset and schema
+    return baseline_manager.get_baseline_comparison(db, b, dataset_id)
 
 @app.get("/api/audit")
 def get_audit_trail(

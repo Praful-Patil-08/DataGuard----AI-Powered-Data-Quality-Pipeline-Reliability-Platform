@@ -70,6 +70,19 @@
 - `created_at`/`updated_at`: TIMESTAMP WITH TIME ZONE
 - `quality_contracts.py`: `_contract_matches()` prefix logic, `evaluate_contracts()` deterministic pandas (completeness via null_rate, uniqueness via unique_ratio, range via validity ratio, regex via re, row_count via dataset.row_count), `create/update/delete` CRUD.
 
+### `baselines` (explicit, versioned, never silent — Phase 6)
+- `id`: UUID / Integer (Primary Key)
+- `dataset_name`: VARCHAR(255) indexed (logical, e.g., `orders` → `orders_v1/v2`)
+- `baseline_dataset_id`: FK -> `datasets.id` (physical dataset that is baseline)
+- `baseline_schema_id`: FK -> `schemas.id` (schema for fingerprint)
+- `fingerprint`: VARCHAR(64) (SHA256)
+- `row_count`/`column_count`: INTEGER snapshot
+- `quality_score`: FLOAT nullable (snapshot from latest scan at creation)
+- `version`: INTEGER (increments per logical dataset)
+- `is_active`: BOOLEAN indexed (only one active per logical, enforced via deactivation)
+- `description`: TEXT, `created_by`: VARCHAR(255), `created_at`/`updated_at`: TIMESTAMP
+- `baselines.py`: `_logical_name` prefix, `get_active_baseline`, `create_baseline` (deactivates previous), `list/activate/compare`; never silently updated after scan
+
 ### `ai_analysis` (history-aware, provider-agnostic)
 - `id`: UUID / Integer (Primary Key)
 - `scan_id`: FK -> `scans.id`
@@ -108,11 +121,12 @@
 - `relationship_type`: VARCHAR(50) (e.g. `DERIVED_BY`, `USED_BY_DASHBOARD`)
 - File `lineage_config.json` editable via `GET/PUT /api/lineage/config` (`is_demo:true`)
 
-### `schemas` + `schema_columns` + historical evolution (Phase 4) + statistical (Phase 5)
+### `schemas` + `schema_columns` + historical evolution (Phase 4) + statistical (Phase 5) + baselines (Phase 6)
 - `schemas` stores per-physical-dataset fingerprint + `created_at`; `schema_columns` stores profiling stats (null_rate, unique_ratio, mean, etc.)
 - Historical versions: per-physical `GET /api/datasets/{id}/schemas` + per-logical `GET /api/datasets/{id}/schema/history` (physical + logical `orders%` evolution)
 - Schema compare `GET /api/datasets/{id}/schema/compare?baseline_dataset_id=` returns `drift_issues` including `COLUMN_RENAMED_CANDIDATE` with `confidence/evidence` (name_sim, type_compat, stat_sim) + `statistical_drifts` (`NUMERIC_PSI/KS`, `CATEGORICAL_PSI/JSD` via `statistical_drift.py` quantile bins / ECDF / JSD, thresholds PSI 0.1/0.25, KS 0.2/0.4, JSD 0.1/0.2, sample-size guarded)
 - Statistical drift integrated into `detect_schema_drift(..., baseline_df, current_df)` when raw DataFrames available (scan preloads via storage); otherwise falls back to Watchtower mean/outlier drift without false precision
+- Baselines `baselines` table: `id`, `dataset_name` logical, `baseline_dataset_id` FK, `baseline_schema_id` FK, `fingerprint`, `row_count/column_count`, `quality_score` snapshot, `version`, `is_active` (only one active per logical), `description`, `created_by`, `created_at/updated_at`; APIs `POST/GET /api/baselines`, `GET/PUT/DELETE /api/baselines/{id}`, `PUT .../activate`, `GET /api/datasets/{id}/baselines`, `GET /api/baselines/{id}/compare/{dataset_id}`; scan uses active baseline when no explicit `baseline_dataset_id` (never silent, fallback to prefix search)
 
 ### `storage` + migrations
 - `storage_backend.py`: `local` `storage/{id}_{filename}` → `s3://` if `STORAGE_BACKEND=s3` (boto3 optional)

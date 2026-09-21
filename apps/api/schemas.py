@@ -214,6 +214,35 @@ class QualityContractResponse(BaseModel):
     updated_at: datetime
     model_config = ConfigDict(from_attributes=True)
 
+# --- Baseline Schemas ---
+class BaselineCreate(BaseModel):
+    dataset_name: Optional[str] = None  # logical name, defaults to dataset's logical
+    baseline_dataset_id: int
+    description: Optional[str] = None
+    created_by: Optional[str] = "system"
+    set_active: bool = True
+
+class BaselineUpdate(BaseModel):
+    description: Optional[str] = None
+    is_active: Optional[bool] = None
+
+class BaselineResponse(BaseModel):
+    id: int
+    dataset_name: str
+    baseline_dataset_id: int
+    baseline_schema_id: Optional[int] = None
+    fingerprint: str
+    row_count: int
+    column_count: int
+    quality_score: Optional[float] = None
+    version: int
+    is_active: bool
+    description: Optional[str] = None
+    created_by: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
 # --- Health Schema ---
 class HealthResponse(BaseModel):
     status: str

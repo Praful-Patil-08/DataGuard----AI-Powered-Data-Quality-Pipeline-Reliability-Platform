@@ -64,9 +64,13 @@
      - Mapping `issue_type→dimension` (single assignment to avoid double penalty), explainable `evidence` per dimension, overall `summary` with weakest dimension hint.
      - Persisted on `scans.quality_score`/`quality_dimensions` (JSON) via `compute_quality_score()` during scan; endpoint `GET /api/scans/{id}/score` recomputes for legacy scans; history includes `quality_score`.
      - Study: OpenMetadata data quality dimensions + Elementary reliability trends → unified score.
+   - `baselines.py` + `Baseline` table — **Phase 6** (Marquez/OpenLineage baseline concept):
+     - Explicit, versioned (`version` increments per logical `dataset_name`), never silent; `dataset_name` logical (e.g., `orders` → `orders_v1/v2`), `baseline_dataset_id/schema_id`, `fingerprint/row_count/column_count/quality_score` snapshot, `is_active` (only one active per logical), `created_by/description`, `created_at`.
+     - Manager `baselines.py` with `_logical_name` prefix logic, `get_active_baseline`, `create_baseline` (deactivates previous active), `list/activate/compare`; scan uses active baseline when no explicit `baseline_dataset_id` (fallback to prefix search).
+     - APIs: `POST/GET /api/baselines`, `GET/PUT/DELETE /api/baselines/{id}`, `PUT .../activate`, `GET /api/datasets/{id}/baselines`, `GET /api/baselines/{id}/compare/{dataset_id}`.
    - `contracts.py` + `dataset_contracts.json`: Table-type & PK contracts (entity/fact/event) eliminating heuristic `endswith _id` false positives.
    - `ai.py` + `ai_provider.py`: OpenAI/Gemini/Mock analyst with structured `AIAnalysisOutput`.
-   - Database layer: SQLAlchemy 2.0 → PostgreSQL (SQLite fallback for hermetic tests); `quality_contracts` + `scans.quality_score/dimensions` via `create_all` + `run_migrations()` additive `ALTER TABLE`.
+   - Database layer: SQLAlchemy 2.0 → PostgreSQL (SQLite fallback for hermetic tests); `quality_contracts` + `baselines` + `scans.quality_score/dimensions` via `create_all` + `run_migrations()` additive `ALTER TABLE`.
 
 3. **Storage (`database/` + `storage_backend.py`)**:
     - PostgreSQL with `run_migrations()` additive `ALTER TABLE` on startup (no Alembic, safe for SQLite/PG): `scans.baseline_dataset_id/incident_*/quality_score/quality_dimensions`, `schema_columns.null_rate/.../top_values`, `ai_analysis.technical_impact/business_impact`.
@@ -82,6 +86,6 @@
 
 6. **Integration & Demo Assets**:
     - Real Olist 9 CSVs (99k orders, 1M geolocation) verified live: `olist_geolocation_dataset.csv` 58MB now passes; `orders_v1 → orders_v2` rename `order_value→order_amount` produces `COLUMN_RENAMED_CANDIDATE`; `amount` distribution shift 100→500 triggers `NUMERIC_PSI_DRIFT` + `CATEGORICAL_PSI_DRIFT`.
-    - `GET /api/datasets/{id}/history` now includes `quality_score`/`quality_dimensions` + `business_impact`, `GET /dashboard/*` 3 endpoints, `GET /scans/{id}/gate`, `GET /scans/{id}/score` (dimensions + summary), `GET /api/datasets/{id}/schema/history` + `.../schema/compare` (now with statistical drifts), `POST /scans/{id}/analyze` history-aware.
+    - `GET /api/datasets/{id}/history` now includes `quality_score`/`quality_dimensions` + `business_impact`, `GET /dashboard/*` 3 endpoints, `GET /scans/{id}/gate`, `GET /scans/{id}/score` (dimensions + summary), `GET /api/datasets/{id}/schema/history` + `.../schema/compare` (now with statistical drifts), `GET /api/baselines` + `.../baselines/{id}/compare/{dataset_id}` for explicit baseline lifecycle, `POST /scans/{id}/analyze` history-aware.
     - Contracts: `GET /api/contracts` + `POST /api/datasets/{id}/contracts/evaluate` for Soda-style declarative checks.
-    - Tests: 59 hermetic `pytest` (7 core + 10 Watchtower + 13 contracts + 10 quality_score + 5 schema_evolution + 14 statistical_drift) + `next build` 6 routes.
+    - Tests: 66 hermetic `pytest` (7 core + 10 Watchtower + 13 contracts + 10 quality_score + 5 schema_evolution + 14 statistical_drift + 7 baselines) + `next build` 6 routes.

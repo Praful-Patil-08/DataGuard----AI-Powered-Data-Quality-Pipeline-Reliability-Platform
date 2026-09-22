@@ -110,10 +110,10 @@
 4. **AI (`ai.py` + `ai_context.py` + `ai_provider.py`) — hardened Phase 12**:
     - Provider-agnostic `AIProvider` (mock/openai/gemini via `AI_PROVIDER`), structured `AIAnalysisOutput` with `technical_impact/business_impact`, history-aware fallback (last 3 scans per `orders` prefix → `Historical context: 2 prior healthy`), now with `ai_context.build_ai_context` (facts only) and `validate_ai_output` (grounded, no hallucinated assets, confidence clamp, prompt sanitization).
 
-5. **Product Surfaces**:
-    - Dashboard: HealthCards + ReliabilityTrend (30d wavy SVG) + TopIssues (5) + BusinessImpact (Revenue/Customer/Margin) + Recent Scans with Business Impact column + Ingest (100MB) + Demo seeds.
-    - Datasets: `/datasets` health cards + `/datasets/[id]` 5 tabs (Overview with baseline `<select>`+Scan trigger, Schema with `null_rate/mean/top_values`, Quality, History sparkline + `business_impact`, Lineage editable `lineage_config.json` via `PUT /api/lineage/config`).
-    - Scans: `scans/[id]` ordered WHAT (incident+gate `PASS/FAIL`) → WHAT changed → AFFECTED (ImpactGraph `is_demo:true`) → WHY/IMPACT/ACTION (AI) → Audit Timeline → Approve/Reject → `/audit?status=&severity=&dataset_id=` filters.
+5. **Product Surfaces** — **Phase 16 incident-first**:
+    - Dashboard (`apps/web/src/app/page.tsx:130`): **Incident-first** rose bezel `What is broken?` (5 `OPEN` incidents from `GET /api/incidents?status=OPEN`, `GET /api/reliability/overview` for `avg_quality_score`/`degradation`), then `HealthCards`, `ReliabilityTrend` 30d, `TopIssues`+`BusinessImpact` (2-col), Ingest + Demo seeds, Recent Scans table now with **Quality Score** column (emerald≥90/amber≥75/rose<75) + Business Impact + AI Diagnosed.
+    - Datasets: `/datasets` health cards + `/datasets/[id]` 5 tabs (Overview with baseline `<select>`+Scan trigger, Schema with `null_rate/mean/top_values`, Quality, History sparkline + `business_impact` + `quality_score`, Lineage editable `lineage_config.json` via `PUT /api/lineage/config` and DB graph `LineageEdge` via `POST /api/lineage/edges`).
+    - Scans: `scans/[id]` ordered WHAT (incident+gate `PASS/FAIL` + quality 0-100) → WHAT changed (SchemaDiff) → AFFECTED (ImpactGraph `is_demo` + `GET /api/impact` KPI) → WHY/IMPACT/ACTION (AI hardened, RAG runbook, `requires_human_approval`) → Audit Timeline → Approve/Reject → `/audit` + `/audit/logs` (filterable, `AuditLog` table).
 
 6. **Integration & Demo Assets**:
     - Real Olist 9 CSVs (99k orders, 1M geolocation) verified live: `olist_geolocation_dataset.csv` 58MB now passes; `orders_v1 → orders_v2` rename `order_value→order_amount` produces `COLUMN_RENAMED_CANDIDATE`; `amount` distribution shift 100→500 triggers `NUMERIC_PSI_DRIFT` + `CATEGORICAL_PSI_DRIFT`.

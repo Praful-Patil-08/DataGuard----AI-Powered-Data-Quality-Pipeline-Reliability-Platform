@@ -24,6 +24,8 @@ export default function Dashboard() {
   const [trend, setTrend] = useState<any[]>([]);
   const [topIssues, setTopIssues] = useState<any[]>([]);
   const [businessImpact, setBusinessImpact] = useState<any[]>([]);
+  const [incidents, setIncidents] = useState<any[]>([]);
+  const [reliability, setReliability] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [dashLoading, setDashLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
@@ -37,6 +39,8 @@ export default function Dashboard() {
         fetch(`${API_BASE}/api/dashboard/reliability-trend?days=30`),
         fetch(`${API_BASE}/api/dashboard/top-issues?limit=5`),
         fetch(`${API_BASE}/api/dashboard/business-impact`),
+        fetch(`${API_BASE}/api/incidents?status=OPEN&limit=5`),
+        fetch(`${API_BASE}/api/reliability/overview`),
       ]);
 
       if (statsRes.ok) {
@@ -50,6 +54,9 @@ export default function Dashboard() {
       if (trendRes.ok) setTrend(await trendRes.json());
       if (topRes.ok) setTopIssues(await topRes.json());
       if (impactRes.ok) setBusinessImpact(await impactRes.json());
+      // incidents and reliability (incident-first)
+      try { const r = await fetch(`${API_BASE}/api/incidents?status=OPEN&limit=5`); if (r.ok) setIncidents(await r.json()); } catch {}
+      try { const r = await fetch(`${API_BASE}/api/reliability/overview`); if (r.ok) setReliability(await r.json()); } catch {}
     } catch (err) {
       console.error("Error fetching dashboard data", err);
     } finally {
@@ -159,6 +166,40 @@ export default function Dashboard() {
 
       {/* Metrics Double-Bezel Cards */}
       <HealthCards stats={stats} />
+
+      {/* Incident-First — What is broken? */}
+      {incidents.length > 0 && (
+        <div className="rounded-[1.75rem] p-1.5 bg-rose-500/5 ring-1 ring-rose-500/20 shadow-[0_12px_40px_rgba(0,0,0,0.5)]">
+          <div className="rounded-[calc(1.75rem-0.375rem)] bg-gradient-to-b from-slate-900/90 to-slate-950 p-6 shadow-[inset_0_1px_1px_rgba(255,255,255,0.06)]">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-sm font-bold text-white flex items-center gap-2"><XCircle className="w-4 h-4 text-rose-400" /> What is broken? — Open Incidents ({incidents.length})</h2>
+              <Link href="/incidents" className="text-xs text-rose-300 hover:text-white">View all →</Link>
+            </div>
+            <div className="space-y-3">
+              {incidents.map((inc:any) => (
+                <div key={inc.id} className="p-3 rounded-xl bg-black/30 border border-white/10 flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${inc.severity==='CRITICAL'?'bg-rose-500/20 text-rose-300 border-rose-500/30':'bg-amber-500/20 text-amber-300 border-amber-500/30'}`}>{inc.severity}</span>
+                      <span className="text-xs font-semibold text-white truncate">{inc.title}</span>
+                    </div>
+                    <p className="text-[11px] text-slate-400 mt-1 line-clamp-1">{inc.root_cause?.slice(0,120)}</p>
+                    <p className="text-[11px] text-slate-500 mt-1">{inc.affected_columns?.slice(0,2).join(", ")} • {inc.issue_count} issues • Score {inc.quality_score_at_incident ?? "-"} </p>
+                  </div>
+                  <Link href={`/scans/${inc.scan_id}`} className="shrink-0 px-3 py-1 rounded-full bg-white/5 border border-white/10 text-xs text-slate-300 hover:text-white">Inspect</Link>
+                </div>
+              ))}
+            </div>
+            {reliability && (
+              <div className="mt-4 pt-4 border-t border-white/10 flex items-center gap-4 text-[11px] font-mono text-slate-400">
+                <span>Avg Quality Score: <b className="text-white">{reliability.avg_quality_score ?? "-"}</b></span>
+                <span>Degradation: <b className={reliability.degradation?.status==='degraded'?'text-rose-300':'text-emerald-300'}>{reliability.degradation?.status}</b></span>
+                <span>7d Incidents: <b className="text-white">{reliability.recent_incidents_7d}</b></span>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Reliability Trend — Watchtower-inspired 30D */}
       <ReliabilityTrend data={trend} loading={dashLoading} />
@@ -283,6 +324,7 @@ export default function Dashboard() {
                     <th className="px-6 py-3.5">Pipeline Run</th>
                     <th className="px-6 py-3.5">Status</th>
                     <th className="px-6 py-3.5">Deterministic Bounds</th>
+                    <th className="px-6 py-3.5">Quality Score</th>
                     <th className="px-6 py-3.5">Business Impact</th>
                     <th className="px-6 py-3.5">AI Analysis</th>
                     <th className="px-6 py-3.5">Completed</th>
@@ -325,6 +367,9 @@ export default function Dashboard() {
                             <span className="text-slate-600">•</span>
                             <span className="text-amber-400 font-medium">{scan.warning_count} warnings</span>
                           </div>
+                        </td>
+                        <td className="px-6 py-4">
+                          <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold border ${scan.quality_score >= 90 ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/20' : scan.quality_score >= 75 ? 'bg-amber-500/10 text-amber-300 border-amber-500/20' : 'bg-rose-500/10 text-rose-300 border-rose-500/20'}`}>{scan.quality_score ?? "-"}</span>
                         </td>
                         <td className="px-6 py-4">
                           {isCritical ? (

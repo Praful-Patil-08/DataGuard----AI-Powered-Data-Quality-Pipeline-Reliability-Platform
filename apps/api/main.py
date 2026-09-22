@@ -961,6 +961,10 @@ def analyze_scan_with_ai(scan_id: int, db: Session = Depends(get_db)):
         created_at=datetime.datetime.now(datetime.timezone.utc)
     )
     db.add(ai_record)
+    db.flush()
+    try:
+        audit_manager.log_action(db, "ai.analysis", "system", "ai_analysis", ai_record.id, previous_state=None, new_state={"scan_id": scan.id, "severity": analysis_dict["severity"]}, reason=analysis_dict["summary"][:200])
+    except: pass
 
     # Automatically create a pending remediation entry for human review
     remediation = models.Remediation(
@@ -998,12 +1002,16 @@ def approve_remediation(
     if not rem:
         raise HTTPException(status_code=404, detail="Remediation not found")
 
+    prev = {"status": rem.status}
     rem.status = "APPROVED"
     rem.decision_by = action.decision_by or "lead_engineer@dataguard.internal"
     rem.decision_at = datetime.datetime.now(datetime.timezone.utc)
     rem.notes = action.notes or "Approved by operator for production pipeline sync."
     db.commit()
     db.refresh(rem)
+    try:
+        audit_manager.log_action(db, "remediation.approve", rem.decision_by, "remediation", rem.id, previous_state=prev, new_state={"status": rem.status, "decision_by": rem.decision_by}, reason=rem.notes)
+    except: pass
     return rem
 
 @app.post("/api/remediations/{remediation_id}/reject", response_model=schemas.RemediationResponse)
@@ -1016,12 +1024,16 @@ def reject_remediation(
     if not rem:
         raise HTTPException(status_code=404, detail="Remediation not found")
 
+    prev = {"status": rem.status}
     rem.status = "REJECTED"
     rem.decision_by = action.decision_by or "lead_engineer@dataguard.internal"
     rem.decision_at = datetime.datetime.now(datetime.timezone.utc)
     rem.notes = action.notes or "Rejected by operator. Manual upstream verification needed."
     db.commit()
     db.refresh(rem)
+    try:
+        audit_manager.log_action(db, "remediation.reject", rem.decision_by, "remediation", rem.id, previous_state=prev, new_state={"status": rem.status}, reason=rem.notes)
+    except: pass
     return rem
 
 # ----------------- Lineage -----------------
@@ -1048,6 +1060,9 @@ def update_lineage_config(payload: dict, db: Session = Depends(get_db)):
 def create_lineage_edge(payload: schemas.LineageEdgeCreate, db: Session = Depends(get_db)):
     try:
         edge = lineage_graph.create_edge(db, payload.model_dump())
+        try:
+            audit_manager.log_action(db, "lineage.create", "system", "lineage_edge", edge.id, previous_state=None, new_state={"source": edge.source_dataset, "target": edge.target_dataset}, reason=edge.description)
+        except: pass
         return edge
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -1204,6 +1219,9 @@ def create_quality_contract(payload: schemas.QualityContractCreate, db: Session 
         raise HTTPException(status_code=400, detail="dataset_name is required")
     try:
         contract = qc_manager.create_contract(db, payload.model_dump())
+        try:
+            audit_manager.log_action(db, "contract.create", "system", "contract", contract.id, previous_state=None, new_state={"dataset_name": contract.dataset_name, "column": contract.column_name, "type": contract.contract_type}, reason=contract.description)
+        except: pass
         return contract
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -1321,6 +1339,9 @@ def create_baseline(payload: schemas.BaselineCreate, db: Session = Depends(get_d
             created_by=payload.created_by or "system",
             set_active=payload.set_active,
         )
+        try:
+            audit_manager.log_action(db, "baseline.create", payload.created_by or "system", "baseline", baseline.id, previous_state=None, new_state={"dataset_name": baseline.dataset_name, "version": baseline.version, "is_active": baseline.is_active}, reason=payload.description)
+        except: pass
         return baseline
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -1422,6 +1443,7 @@ def update_incident(incident_id: int, payload: schemas.IncidentStatusUpdate, db:
         raise HTTPException(status_code=404, detail="Incident not found")
     if payload.status.upper() not in {"OPEN", "INVESTIGATING", "RESOLVED", "CLOSED"}:
         raise HTTPException(status_code=400, detail="Invalid status. Use OPEN, INVESTIGATING, RESOLVED, CLOSED")
+    prev_status = inc.status
     inc.status = payload.status.upper()
     if payload.status.upper() in ("RESOLVED", "CLOSED"):
         import datetime
@@ -1434,6 +1456,9 @@ def update_incident(incident_id: int, payload: schemas.IncidentStatusUpdate, db:
     inc.updated_at = datetime.datetime.now(datetime.timezone.utc)
     db.commit()
     db.refresh(inc)
+    try:
+        audit_manager.log_action(db, "incident.status_update", payload.resolved_by or "system", "incident", inc.id, previous_state={"status": prev_status}, new_state={"status": inc.status}, reason=f"Status {prev_status} -> {inc.status}")
+    except: pass
     return inc
 
 @app.get("/api/scans/{scan_id}/incidents", response_model=List[schemas.IncidentResponse])
@@ -1557,6 +1582,10 @@ def rag_for_scan(scan_id: int, k: int = 3, db: Session = Depends(get_db)):
     issues_data = [{"issue_type": i.issue_type, "severity": i.severity, "column_name": i.column_name} for i in issues]
     docs = rag_store.retrieve_for_scan(scan.dataset.name if scan.dataset else "unknown", issues_data, k=k)
     return {"scan_id": scan_id, "dataset": scan.dataset.name if scan.dataset else "unknown", "results": docs, "count": len(docs)}
+
+@app.get("/api/audit/logs", response_model=list[schemas.AuditLogResponse])
+def list_audit_logs(action: str | None = None, target_type: str | None = None, actor: str | None = None, limit: int = 50, db: Session = Depends(get_db)):
+    return audit_manager.get_audit_logs(db, action=action, target_type=target_type, actor=actor, limit=limit)
 
 @app.get("/api/audit")
 def get_audit_trail(
